@@ -74,8 +74,8 @@ export function LandingPage() {
                 className="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start"
               >
                 <Button size="lg" className="h-14 px-8 text-[var(--text-base)] font-bold shadow-xl shadow-primary/20 hover:scale-105 transition-transform" asChild>
-                  <Link to="/generator">
-                    Start Generating <ArrowRight className="ml-2 w-4 h-4" />
+                  <Link to="/pipeline">
+                    Upload CSV <ArrowRight className="ml-2 w-4 h-4" />
                   </Link>
                 </Button>
                 <Button size="lg" variant="outline" className="h-14 px-8 text-[var(--text-base)]" asChild>

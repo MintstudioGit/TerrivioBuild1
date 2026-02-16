@@ -3,7 +3,7 @@ import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
 import { 
   LayoutGrid, Terminal, Package, BookOpen, CreditCard, Wand2, Menu, 
-  Settings, BarChart3, Sparkles, LogOut, User 
+  Settings, BarChart3, Sparkles, LogOut, User, Layers 
 } from "lucide-react";
 import { motion } from "motion/react";
 import { useDesignContext } from "./DesignController";
@@ -30,7 +30,8 @@ export function GlobalHeader() {
   const navItems = [
     { id: "directory", path: "/prompts", label: "Directory", icon: LayoutGrid },
     { id: "generator", path: "/generator", label: "Generator", icon: Terminal },
-    { id: "packs", path: "/packs", label: "Packs", icon: Package, badge: "New" },
+    { id: "pipeline", path: "/pipeline", label: "Pipeline", icon: Layers, badge: "New" },
+    { id: "packs", path: "/packs", label: "Packs", icon: Package },
     { id: "saved", path: "/saved", label: "Saved", icon: BookOpen },
     { id: "pricing", path: "/pricing", label: "Pricing", icon: CreditCard },
   ];

@@ -14,6 +14,7 @@ import { AboutPage } from "./components/AboutPage";
 import { PrivacyPage } from "./components/PrivacyPage";
 import { TermsPage } from "./components/TermsPage";
 import { ComingSoonPage } from "./components/ComingSoonPage";
+import { PipelineBuilderPage } from "./components/PipelineBuilderPage";
 
 import { UpgradePage } from "./components/UpgradePage";
 
@@ -56,6 +57,9 @@ export default function App() {
             <Route path="/generator" element={<GeneratorPage initialTab="builder" />} />
             <Route path="/packs" element={<GeneratorPage initialTab="packs" />} />
             <Route path="/packs/:slug" element={<PackLandingPage />} />
+
+            {/* Pipeline Builder */}
+            <Route path="/pipeline" element={<PipelineBuilderPage />} />
 
             {/* Legal & Company Pages */}
             <Route path="/about" element={<AboutPage />} />
