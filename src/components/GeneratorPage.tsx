@@ -28,6 +28,7 @@ import {
   cleanText
 } from "./prompt-engine";
 import { generateWithQualityGate } from "./prompt-quality-gate";
+import { OfferExtractorComponent, type ExtractedOffer } from "./OfferExtractorComponent";
 
 // --- COMPONENTS ---
 
