@@ -866,4 +866,113 @@ app.post("/make-server-a2b5dce9/enrich-company", async (c) => {
   return jsonOk(c, result);
 });
 
+// ─── Context Scraper ──────────────────────────────────────────────────────────
+
+function extractCleanText(html: string): string {
+  const text = html
+    // Remove noise blocks entirely
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/<head[\s\S]*?<\/head>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    // Block elements → newlines
+    .replace(/<\/?(p|div|section|article|h[1-6]|li|tr|br|blockquote)[^>]*>/gi, "\n")
+    // Strip all remaining tags
+    .replace(/<[^>]+>/g, "")
+    // Decode HTML entities
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&mdash;/g, "—")
+    .replace(/&ndash;/g, "–")
+    .replace(/&hellip;/g, "...")
+    // Strip any markdown that leaked through
+    .replace(/#{1,6}\s+/g, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/_(.+?)_/g, "$1")
+    .replace(/`{1,3}[\s\S]*?`{1,3}/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    // Normalise whitespace
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
+}
+
+app.post("/make-server-a2b5dce9/scrape", async (c) => {
+  const body = await c.req.json();
+  const { url } = body;
+
+  if (!url || typeof url !== "string") {
+    return c.json({ error: "url is required" }, 400);
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return c.json({ error: "Only http/https URLs are supported" }, 400);
+    }
+  } catch {
+    return c.json({ error: "Invalid URL" }, 400);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(parsedUrl.toString(), {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; ContextBot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,text/plain",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return c.json({ error: `Fetch failed: ${response.status}` }, 502);
+    }
+
+    // Stream with a 500 KB cap — avoids waiting on huge pages
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+    const MAX = 500_000;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+      if (raw.length >= MAX) { reader.cancel(); break; }
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    const text = contentType.includes("text/plain")
+      ? raw.trim()
+      : extractCleanText(raw);
+
+    return c.json({ text, length: text.length });
+
+  } catch (err: unknown) {
+    clearTimeout(timeout);
+    if ((err as { name?: string })?.name === "AbortError") {
+      return c.json({ error: "Request timed out" }, 504);
+    }
+    return c.json({ error: "Scrape failed" }, 502);
+  }
+});
+
 Deno.serve(app.fetch);
