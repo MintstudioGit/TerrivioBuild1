@@ -300,7 +300,8 @@ export function PipelineBuilderPage() {
     setStep("run");
 
     const tmpl = VARIANT_TEMPLATES[selectedAngle];
-    const variantType = (VARIANT_TYPE_MAP?.[tmpl.approach] ?? tmpl.approach) as AngleType;
+    // Use the typed insight/angle key directly if present, fallback to VARIANT_TYPE_MAP
+    const variantType = ((tmpl as { insight?: string }).insight ?? VARIANT_TYPE_MAP?.[tmpl.approach] ?? tmpl.approach) as AngleType;
     const CONCURRENCY = 3;
 
     const processRow = async (idx: number, row: CSVRow) => {

@@ -4,7 +4,7 @@
 export type SignalType = "Quality" | "Speed" | "Accuracy" | "Detail" | "Creative" | "Conversion";
 export type CategoryType = "Development" | "Marketing" | "Sales" | "Content" | "Design" | "General";
 
-// Angle types — these change LOGIC not just tone
+// Angle types — kept for backward compat, non-sales path still uses them
 export type AngleType =
     | "missed_opportunity"
     | "hidden_risk"
@@ -13,8 +13,15 @@ export type AngleType =
     | "pattern_interrupt"
     | "social_proof";
 
+// New insight types — used by the Sales path
+export type InsightType =
+    | "focus_trap"
+    | "blind_spot"
+    | "scaling_wrong"
+    | "hidden_bottleneck";
+
 // Backward compat alias
-export type VariantType = AngleType;
+export type VariantType = AngleType | InsightType;
 
 export type FrameworkType = "RISEN" | "RTF" | "APE" | "RACE";
 
@@ -297,8 +304,42 @@ export const ANGLE_TEMPLATES = [
     },
 ];
 
-// Backward compat alias — GeneratorPage & PackBuilderView import VARIANT_TEMPLATES
-export const VARIANT_TEMPLATES = ANGLE_TEMPLATES;
+// ─── Insight Types (new Sales engine) ───────────────────────────────────────
+// Replaces the 6-angle system. One insight → one message.
+export const INSIGHT_TYPES = [
+    {
+        approach: "Focus Trap",
+        type: "Insight",
+        desc: "They're over-investing in the wrong metric or feature",
+        insight: "focus_trap" as InsightType,
+        provocation: "The thing they're proud of is actually the problem."
+    },
+    {
+        approach: "Blind Spot",
+        type: "Insight",
+        desc: "An obvious gap they've stopped seeing",
+        insight: "blind_spot" as InsightType,
+        provocation: "Everyone in their space ignores this — and pays for it eventually."
+    },
+    {
+        approach: "Scaling Wrong",
+        type: "Insight",
+        desc: "Growing volume when the real lever is something else",
+        insight: "scaling_wrong" as InsightType,
+        provocation: "More of the same thing won't fix a direction problem."
+    },
+    {
+        approach: "Hidden Bottleneck",
+        type: "Insight",
+        desc: "An invisible constraint killing throughput or conversion",
+        insight: "hidden_bottleneck" as InsightType,
+        provocation: "They're optimizing the last mile but losing at the first."
+    },
+];
+
+// VARIANT_TEMPLATES — primary import for UI pickers.
+// Sales path: uses INSIGHT_TYPES. Non-sales: ANGLE_TEMPLATES is still available.
+export const VARIANT_TEMPLATES = INSIGHT_TYPES;
 
 interface AngleDefinition {
     label: string;
@@ -468,6 +509,97 @@ export function inferBestAngle(ctx: ContextShape): AngleType {
   return "pattern_interrupt";
 }
 
+/**
+ * interpretContext — converts raw ContextShape fields into a short interpreted
+ * paragraph the LLM can reason from. This is the "thinking" step:
+ * raw data → what it MEANS → what the real problem likely is.
+ */
+export function interpretContext(sc: ContextShape & { sender_what?: string; your_offer?: string }): string {
+    const ok = (v?: string) => !!(v && v !== "unknown" && v.trim().length > 3);
+    const lines: string[] = [];
+
+    if (ok(sc.what_they_do)) {
+        lines.push(`They ${sc.what_they_do.replace(/^(we|they)\s+/i, "")}.`);
+    }
+    if (ok(sc.who_they_serve ?? sc.target_customer)) {
+        lines.push(`Their buyers are ${sc.who_they_serve ?? sc.target_customer}.`);
+    }
+    if (ok(sc.how_they_make_money ?? sc.core_motion)) {
+        lines.push(`Revenue model: ${sc.how_they_make_money ?? sc.core_motion}.`);
+    }
+    if (ok(sc.key_activity)) {
+        lines.push(`Core motion: ${sc.key_activity}.`);
+    }
+    if (ok(sc.high_risk_area)) {
+        lines.push(`Likely risk: ${sc.high_risk_area}.`);
+    }
+    if (ok(sc.what_breaks_if_done_badly ?? sc.likely_problem)) {
+        lines.push(`What breaks badly: ${sc.what_breaks_if_done_badly ?? sc.likely_problem}.`);
+    }
+    if (ok(sc.evidence)) {
+        lines.push(`Direct quote from their site: "${sc.evidence}"`);
+    }
+    if (ok(sc.your_offer)) {
+        lines.push(`What you're selling: ${sc.your_offer}.`);
+    }
+    if (ok(sc.sender_what)) {
+        lines.push(`Your company: ${sc.sender_what}.`);
+    }
+    return lines.join(" ");
+}
+
+export function generateInsightPrompt(opts: {
+    insightType: InsightType;
+    interpretedContext: string;
+    role?: string;
+    industry?: string;
+    useCase?: string;
+}): string {
+    const insightInstructions: Record<InsightType, string> = {
+        focus_trap:
+            "Identify the one metric, feature, or effort they're over-invested in. " +
+            "Make the case that it's not actually moving the needle — and something else is.",
+        blind_spot:
+            "Identify the one obvious thing they're not doing (or not measuring). " +
+            "Not because they don't care — because they're too close to see it.",
+        scaling_wrong:
+            "Identify where they're adding volume (headcount, budget, outreach, traffic) " +
+            "when the real constraint is upstream. More of the same won't fix it.",
+        hidden_bottleneck:
+            "Identify the invisible step in their process that's killing throughput or conversion. " +
+            "Everyone downstream optimizes. Nobody fixes this.",
+    };
+
+    return [
+        `You are a top SDR writing a ${opts.useCase || "cold outbound message"}.`,
+        "",
+        "Your job is NOT to personalize.",
+        "Your job is to find ONE sharp insight and build ONE message around it.",
+        "",
+        "Company data:",
+        opts.interpretedContext || "[no context provided]",
+        "",
+        `Insight type: ${insightInstructions[opts.insightType]}`,
+        "",
+        "Rules:",
+        "- Max 60 words",
+        "- No structure. No numbered lists. No bullet points.",
+        "- No buzzwords: no 'drive', 'leverage', 'streamline', 'enable', 'synergy', 'cutting-edge'",
+        "- No greeting formula. No 'Hi [name], I noticed...'",
+        "- No pitch. State the insight. Let it land.",
+        "- Be slightly provocative — say one thing they might push back on",
+        "- End with one question that's hard to say 'not relevant' to",
+        "- Must feel like a real thought from a smart peer, not a marketer",
+        "",
+        "Self-check:",
+        "- Could this be sent to any company? → rewrite",
+        "- Does line 1 contain a real observation? → if not, rewrite",
+        "- Is the question at the end easy to ignore? → rewrite",
+        "",
+        "Output: just the message. No preamble. No meta-commentary."
+    ].join("\n");
+}
+
 export function generateCOSTARPrompt(opts: {
     useCase: string;
     outcome: string;
@@ -515,40 +647,43 @@ export function generateCOSTARPrompt(opts: {
     }
 
     if (isSales) {
-        // New master prompt — forces specificity, angle, and hard constraints
-        return [
-            `You are an elite B2B outbound strategist.`,
-            `Role: ${role}`,
-            `Industry: ${industry}`,
-            "",
-            "TASK:",
-            `Write a ${useCase} that gets a reply, not a meeting.`,
-            "",
-            "ANGLE:",
-            `${def.label} — ${def.salesInstruction}`,
-            "",
-            "STRUCTURE:",
-            ...def.structure.map((s, i) => `${i + 1}. ${s}`),
-            "",
-            "RULES:",
-            "- Max 75 words",
-            "- No buzzwords",
-            "- No generic phrases (\"improve efficiency\", \"drive growth\", \"streamline workflows\")",
-            "- Mention the company or prospect's context once",
-            "- One reply-based CTA (not a calendar link, not \"book a demo\")",
-            "- Must feel written by a peer, not a marketer",
-            "",
-            "SELF-CHECK:",
-            `- ${def.constraint}`,
-            "- If this email could be sent to any company → rewrite",
-            "- If there is no clear insight in line 1 → rewrite",
-            "- If the CTA asks for time before earning it → rewrite",
-            "- If the Evidence field is present and your email does not reference or reframe it → rewrite",
-            "",
-            "GOAL:",
-            `Make the reader think: \"this is relevant to me right now.\"`,
-            contextBlock
-        ].filter(Boolean).join("\n");
+        // ── Insight-based Sales path ───────────────────────────────────────────────
+        // Pick insight type from variant (maps old angle keys too for backward compat)
+        const insightMap: Record<string, InsightType> = {
+            focus_trap: "focus_trap",
+            blind_spot: "blind_spot",
+            scaling_wrong: "scaling_wrong",
+            hidden_bottleneck: "hidden_bottleneck",
+            // legacy angle → nearest insight
+            missed_opportunity: "blind_spot",
+            hidden_risk: "hidden_bottleneck",
+            timing_trigger: "focus_trap",
+            inefficiency: "hidden_bottleneck",
+            pattern_interrupt: "blind_spot",
+            social_proof: "scaling_wrong",
+        };
+        const insightKey: InsightType = insightMap[angleKey] ?? "blind_spot";
+
+        // Build the interpreted context: structured first, then plain-text fallback
+        let interpretedCtx = "";
+        if (opts.structuredContext) {
+            interpretedCtx = interpretContext(opts.structuredContext);
+        } else if (opts.context) {
+            interpretedCtx = opts.context
+                .replace(/Title:|URL Source|Source:|Markdown Content:/gi, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 400);
+        }
+        if (!interpretedCtx) interpretedCtx = `${role} at a ${industry} company`;
+
+        return generateInsightPrompt({
+            insightType: insightKey,
+            interpretedContext: interpretedCtx,
+            role,
+            industry,
+            useCase,
+        });
     }
 
     // Non-sales: angle-driven structured prompt

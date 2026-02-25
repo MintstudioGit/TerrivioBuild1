@@ -1443,7 +1443,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                             )}
                             {suggestedAngle && !editLeadOpen && (
                               <p className="text-[9px] mt-1.5 pt-1.5 border-t border-blue-500/20 text-blue-700 font-bold">
-                                ⚡ Suggested angle: {VARIANT_TEMPLATES.find(t => t.angle === suggestedAngle)?.approach}
+                                ⚡ Suggested angle: {VARIANT_TEMPLATES.find(t => ((t as { insight?: string }).insight ?? (t as { angle?: string }).angle) === suggestedAngle)?.approach}
                               </p>
                             )}
                           </div>
@@ -1675,7 +1675,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                     {VARIANT_TEMPLATES.map((tmpl, idx) => {
                        const isSelected = selectedApproaches.includes(idx);
                        const isLocked = !isPro && idx > 2;
-                       const isSuggested = !isSelected && !isLocked && suggestedAngle !== null && tmpl.angle === suggestedAngle;
+                       const isSuggested = !isSelected && !isLocked && suggestedAngle !== null && (((tmpl as { insight?: string }).insight ?? (tmpl as { angle?: string }).angle) === suggestedAngle);
 
                        return (
                          <motion.button

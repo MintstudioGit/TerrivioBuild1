@@ -1,13 +1,19 @@
 import type { VariantType } from "../prompt-engine";
 
-// Maps ANGLE_TEMPLATES approach names → AngleType keys used by generateCOSTARPrompt
+// Maps ANGLE_TEMPLATES / INSIGHT_TYPES approach names → VariantType keys used by generateCOSTARPrompt
 export const VARIANT_TYPE_MAP: Record<string, VariantType> = {
+  // Legacy angle names
   "Missed Opportunity": "missed_opportunity",
   "Hidden Risk":        "hidden_risk",
   "Timing Trigger":     "timing_trigger",
   "Inefficiency":       "inefficiency",
   "Pattern Interrupt":  "pattern_interrupt",
   "Social Proof":       "social_proof",
+  // New insight type names
+  "Focus Trap":         "focus_trap",
+  "Blind Spot":         "blind_spot",
+  "Scaling Wrong":      "scaling_wrong",
+  "Hidden Bottleneck":  "hidden_bottleneck",
 };
 
 export const USE_CASE_OPTIONS = [
