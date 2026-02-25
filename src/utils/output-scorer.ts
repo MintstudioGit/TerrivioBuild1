@@ -1,5 +1,5 @@
 // ─── OUTPUT SCORER ────────────────────────────────────────────────────────────
-// Grades generated prompt/email output on 6 dimensions (max 100 pts).
+// Grades generated prompt/email output on 7 dimensions (max 100 pts).
 // Deterministic — no LLM required.
 //
 // Dimensions:
@@ -8,6 +8,7 @@
 //   angle            0–20   (does it create tension / a question?)
 //   structure        0–15   (multi-line or wall of text?)
 //   cta              0–10   (soft reply CTA or hard ask?)
+//   hook             0–10   (opening question + strong CTA together)
 //   genericPenalty  −0–20   (penalty for buzzwords)
 
 import type { StructuredContext } from "./website-scraper";
@@ -19,6 +20,7 @@ export interface OutputScoreResult {
   angle: number;
   structure: number;
   cta: number;
+  hook: number;
   genericPenalty: number;
   issues: string[];
   grade: "strong" | "good" | "weak" | "bad";
@@ -162,6 +164,31 @@ function scoreCTA(output: string): { score: number; issues: string[] } {
   };
 }
 
+// +10 bonus: rewards outputs that open with a pointed question AND land a strong CTA.
+// Both criteria are exactly what the prompt engine now enforces, so well-formed
+// missed_opportunity emails will always earn the full 10 pts.
+function scoreHook(output: string): { score: number; issues: string[] } {
+  const lower = output.toLowerCase();
+  const firstLine = output.split(/\n+/)[0] || "";
+  const strongCTA = [
+    "worth", "curious", "makes sense", "relevant", "open to",
+    "thoughts?", "sound familiar", "ring true", "resonates",
+  ];
+  let score = 0;
+  const issues: string[] = [];
+  if (firstLine.includes("?") && firstLine.length > 15) {
+    score += 5;
+  } else {
+    issues.push("Hook: opening line should be a question");
+  }
+  if (strongCTA.some(w => lower.includes(w))) {
+    score += 5;
+  } else {
+    issues.push("Hook: CTA should use a soft-reply word (worth/curious/resonates…)");
+  }
+  return { score, issues };
+}
+
 function penaltyGeneric(output: string): number {
   const bad = ["solution", "platform", "optimize", "scalable", "leverage", "synergy", "robust"];
   let penalty = 0;
@@ -179,23 +206,28 @@ export function scoreOutput(output: string, ctx?: StructuredContext): OutputScor
   const angle   = scoreAngle(output);
   const struct  = scoreStructure(output);
   const cta     = scoreCTA(output);
+  const hook    = scoreHook(output);
   const penalty = penaltyGeneric(output);
 
   const total = Math.max(
     0,
     Math.min(
       100,
-      Math.round(spec.score + pers.score + angle.score + struct.score + cta.score - penalty)
+      Math.round(
+        spec.score + pers.score + angle.score + struct.score +
+        cta.score + hook.score - penalty
+      )
     )
   );
 
   const issues: string[] = [
-    ...spec.issues, ...pers.issues, ...angle.issues, ...struct.issues, ...cta.issues,
+    ...spec.issues, ...pers.issues, ...angle.issues,
+    ...struct.issues, ...cta.issues, ...hook.issues,
   ];
 
   let grade: OutputScoreResult["grade"];
-  if (total >= 85) grade = "strong";
-  else if (total >= 70) grade = "good";
+  if (total >= 90) grade = "strong";
+  else if (total >= 75) grade = "good";
   else if (total >= 50) grade = "weak";
   else grade = "bad";
 
@@ -206,6 +238,7 @@ export function scoreOutput(output: string, ctx?: StructuredContext): OutputScor
     angle: Math.round(angle.score),
     structure: Math.round(struct.score),
     cta: Math.round(cta.score),
+    hook: Math.round(hook.score),
     genericPenalty: penalty,
     issues,
     grade,
@@ -214,16 +247,16 @@ export function scoreOutput(output: string, ctx?: StructuredContext): OutputScor
 
 /** Emoji indicator for an output score */
 export function outputScoreEmoji(total: number): string {
-  if (total >= 85) return "🔥";
-  if (total >= 70) return "👍";
+  if (total >= 90) return "🔥";
+  if (total >= 75) return "👍";
   if (total >= 50) return "⚠️";
   return "❌";
 }
 
 /** Tailwind badge class for output score */
 export function outputScoreBadgeClass(total: number): string {
-  if (total >= 85) return "bg-green-100 text-green-700";
-  if (total >= 70) return "bg-blue-100 text-blue-700";
+  if (total >= 90) return "bg-green-100 text-green-700";
+  if (total >= 75) return "bg-blue-100 text-blue-700";
   if (total >= 50) return "bg-amber-100 text-amber-700";
   return "bg-red-100 text-red-700";
 }

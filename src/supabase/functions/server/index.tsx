@@ -488,6 +488,55 @@ app.put("/make-server-a2b5dce9/white-label", async (c) => {
 
 // --- Preview Prompt ---
 
+// Lightweight deterministic scorer — mirrors src/utils/output-scorer.ts logic.
+// Kept inline so the Deno edge function has no external imports.
+function scorePromptText(text: string): number {
+  const lower = text.toLowerCase();
+  const lines = text.split("\n").filter((l: string) => l.trim().length > 0);
+  const firstLine = lines[0] || "";
+  const GENERIC_PHRASES = [
+    "improve efficiency","drive growth","streamline workflows","leverage",
+    "innovative solution","synergy","best-in-class","world-class",
+    "cutting-edge","next-level","game-changing","digital transformation",
+    "scalable solution","empower","holistic","robust solution",
+  ];
+  const PENALTY_WORDS = ["solution","platform","optimize","scalable","leverage","synergy","robust"];
+  const STRONG_CTA = ["worth","curious","makes sense","relevant","open to","thoughts?","sound familiar","ring true","resonates"];
+
+  // specificity (25)
+  let spec = 25;
+  if (text.length < 50) spec -= 15;
+  for (const p of GENERIC_PHRASES) { if (lower.includes(p)) spec -= 4; }
+  spec = Math.max(spec, 0);
+
+  // angle (20)
+  const angle = (firstLine.includes("?") && firstLine.length > 15) ? 20
+    : lower.includes("?") ? 15
+    : (["because","which means","that's why","when ","while "].some(w => lower.includes(w)) && text.length >= 100) ? 13
+    : 5;
+
+  // structure (15)
+  const struct = lines.length >= 3 ? 15 : lines.length === 2 ? 10 : 4;
+
+  // cta (10)
+  const cta = STRONG_CTA.some(w => lower.includes(w)) ? 10 : lower.includes("?") ? 7 : 2;
+
+  // hook bonus (10)
+  const hookQ = (firstLine.includes("?") && firstLine.length > 15) ? 5 : 0;
+  const hookCTA = STRONG_CTA.some(w => lower.includes(w)) ? 5 : 0;
+  const hook = hookQ + hookCTA;
+
+  // generic penalty
+  let penalty = 0;
+  for (const w of PENALTY_WORDS) { if (lower.includes(w)) penalty += 4; }
+  penalty = Math.min(penalty, 20);
+
+  // personalization: no context available server-side so award 10 flat
+  const pers = 10;
+
+  return Math.max(0, Math.min(100, Math.round(spec + pers + angle + struct + cta + hook - penalty)));
+}
+
 app.post("/make-server-a2b5dce9/preview-prompt", async (c) => {
   const user = await requireUser(c);
   if (!user) return jsonError(c, 401, "UNAUTHORIZED", "Unauthorized");
@@ -500,7 +549,8 @@ app.post("/make-server-a2b5dce9/preview-prompt", async (c) => {
 
   const summary = parsed.data.prompt.slice(0, 400);
   const result = `Preview (model=${parsed.data.model || "default"}): ${summary}${parsed.data.prompt.length > 400 ? "..." : ""}`;
-  return jsonOk(c, { output: result });
+  const score = scorePromptText(parsed.data.prompt) / 100; // 0–1 fraction for PipelineBuilderPage
+  return jsonOk(c, { output: result, score });
 });
 
 // --- Contact ---

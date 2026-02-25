@@ -137,8 +137,8 @@ function ProgressBar({ value, max, label }: { value: number; max: number; label?
 
 function ScoreBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
-  const cls = pct >= 85 ? "bg-emerald-100 text-emerald-700"
-    : pct >= 70 ? "bg-blue-100 text-blue-700"
+  const cls = pct >= 90 ? "bg-emerald-100 text-emerald-700"
+    : pct >= 75 ? "bg-blue-100 text-blue-700"
     : pct >= 50 ? "bg-amber-100 text-amber-700"
     : "bg-red-100 text-red-700";
   return (
@@ -300,8 +300,7 @@ export function PipelineBuilderPage() {
     setStep("run");
 
     const tmpl = VARIANT_TEMPLATES[selectedAngle];
-    // Use the typed insight/angle key directly if present, fallback to VARIANT_TYPE_MAP
-    const variantType = ((tmpl as { insight?: string }).insight ?? VARIANT_TYPE_MAP?.[tmpl.approach] ?? tmpl.approach) as AngleType;
+    const variantType = (VARIANT_TYPE_MAP?.[tmpl.approach] ?? tmpl.approach) as AngleType;
     const CONCURRENCY = 3;
 
     const processRow = async (idx: number, row: CSVRow) => {
