@@ -16,7 +16,7 @@ export function PackLandingPage() {
   const pack = WORKFLOW_PACKS.find(p => p.id === slug);
 
   if (!pack) {
-    return <Navigate to="/packs" replace />;
+    return <Navigate to="/marketplace" replace />;
   }
 
   const handleUsePack = () => {
@@ -30,8 +30,8 @@ export function PackLandingPage() {
         <div className="max-w-[1600px] mx-auto px-6 h-16 flex items-center justify-between">
            <div className="flex items-center gap-4">
               <Button variant="ghost" asChild className="pl-0 gap-2 text-muted-foreground hover:text-foreground">
-                 <Link to="/packs">
-                    <ArrowLeft className="w-4 h-4" /> Back to Packs
+                 <Link to="/marketplace">
+                    <ArrowLeft className="w-4 h-4" /> Back to Marketplace
                  </Link>
               </Button>
               <div className="h-4 w-px bg-border/50" />

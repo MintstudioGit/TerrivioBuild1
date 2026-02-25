@@ -3,7 +3,7 @@ import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
 import { 
   LayoutGrid, Terminal, Package, BookOpen, CreditCard, Wand2, Menu, 
-  Settings, BarChart3, Sparkles, LogOut, User, Layers 
+  Settings, BarChart3, Sparkles, LogOut, User, Layers, Store, Smartphone, KeyRound, Plug, ShieldCheck, LayoutDashboard 
 } from "lucide-react";
 import { motion } from "motion/react";
 import { useDesignContext } from "./DesignController";
@@ -15,6 +15,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTrigger,
+} from "./ui/sheet";
 
 export function GlobalHeader() {
   const { userState, supabase } = useDesignContext();
@@ -28,12 +34,23 @@ export function GlobalHeader() {
   };
 
   const navItems = [
+    { id: "app", path: "/app", label: "App Hub", icon: LayoutDashboard },
     { id: "directory", path: "/prompts", label: "Directory", icon: LayoutGrid },
     { id: "generator", path: "/generator", label: "Generator", icon: Terminal },
     { id: "pipeline", path: "/pipeline", label: "Pipeline", icon: Layers, badge: "New" },
     { id: "packs", path: "/packs", label: "Packs", icon: Package },
+    { id: "marketplace", path: "/marketplace", label: "Marketplace", icon: Store },
     { id: "saved", path: "/saved", label: "Saved", icon: BookOpen },
     { id: "pricing", path: "/pricing", label: "Pricing", icon: CreditCard },
+  ];
+
+  const platformItems = [
+    { id: "integrations", path: "/integrations", label: "Integrations", icon: Plug },
+    { id: "api-keys", path: "/api-keys", label: "API Keys", icon: KeyRound },
+    { id: "white-label", path: "/white-label", label: "White Label", icon: ShieldCheck },
+    { id: "mobile", path: "/mobile", label: "Mobile App", icon: Smartphone },
+    { id: "analytics", path: "/analytics", label: "Analytics", icon: BarChart3 },
+    { id: "blog", path: "/blog", label: "Blog", icon: BookOpen },
   ];
 
   return (
@@ -73,6 +90,33 @@ export function GlobalHeader() {
                 )}
               </Link>
            ))}
+           <DropdownMenu>
+             <DropdownMenuTrigger asChild>
+               <button
+                 className={cn(
+                   "px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center gap-2 relative group",
+                   platformItems.some((item) => isActive(item.path))
+                     ? "text-foreground font-bold"
+                     : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                 )}
+               >
+                 <Settings className={cn("w-4 h-4", platformItems.some((item) => isActive(item.path)) ? "text-primary" : "opacity-70 group-hover:opacity-100")} />
+                 Platform
+               </button>
+             </DropdownMenuTrigger>
+             <DropdownMenuContent align="start" className="w-56">
+               <DropdownMenuLabel>Platform</DropdownMenuLabel>
+               <DropdownMenuSeparator />
+               {platformItems.map((item) => (
+                 <DropdownMenuItem key={item.id} asChild>
+                   <Link to={item.path} className="cursor-pointer w-full flex items-center">
+                     <item.icon className="w-4 h-4 mr-2" />
+                     {item.label}
+                   </Link>
+                 </DropdownMenuItem>
+               ))}
+             </DropdownMenuContent>
+           </DropdownMenu>
         </nav>
 
         {/* Right Side Actions */}
@@ -164,10 +208,81 @@ export function GlobalHeader() {
              </DropdownMenu>
            )}
            
-           {/* Mobile Menu Toggle */}
-           <button className="md:hidden p-2 text-muted-foreground hover:bg-muted rounded-md">
-              <Menu className="w-5 h-5" />
-           </button>
+           {/* Mobile Menu */}
+           <Sheet>
+             <SheetTrigger asChild>
+               <button className="md:hidden p-2 text-muted-foreground hover:bg-muted rounded-md">
+                  <Menu className="w-5 h-5" />
+               </button>
+             </SheetTrigger>
+             <SheetContent side="right">
+               <SheetHeader>
+                 <div className="flex items-center gap-2 font-bold text-base">
+                   <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary text-primary-foreground">
+                     <Wand2 className="w-4 h-4" />
+                   </div>
+                   Terrivio
+                 </div>
+                 <p className="text-xs text-muted-foreground">
+                   Navigate the platform
+                 </p>
+               </SheetHeader>
+               <div className="px-4 pb-4 space-y-2">
+                 {navItems.map((item) => (
+                   <Link
+                     key={item.id}
+                     to={item.path}
+                     className={cn(
+                       "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border",
+                       isActive(item.path)
+                         ? "bg-primary text-primary-foreground border-primary"
+                         : "bg-muted/30 text-muted-foreground border-border hover:text-foreground"
+                     )}
+                   >
+                     <item.icon className="w-4 h-4" />
+                     {item.label}
+                   </Link>
+                 ))}
+                 <div className="pt-2 mt-2 border-t border-border">
+                   <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-2 pb-2">
+                     Platform
+                   </div>
+                   {platformItems.map((item) => (
+                     <Link
+                       key={item.id}
+                       to={item.path}
+                       className={cn(
+                         "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border",
+                         isActive(item.path)
+                           ? "bg-primary/10 text-primary border-primary/20"
+                           : "text-muted-foreground hover:text-foreground hover:bg-muted/50 border-transparent"
+                       )}
+                     >
+                       <item.icon className="w-4 h-4" />
+                       {item.label}
+                     </Link>
+                   ))}
+                 </div>
+               </div>
+               <div className="px-4 pb-6 space-y-2">
+                 {userState === 'guest' && (
+                   <>
+                     <Button variant="outline" className="w-full" asChild>
+                       <Link to="/signin">Sign In</Link>
+                     </Button>
+                     <Button className="w-full" asChild>
+                       <Link to="/signup">Get Started</Link>
+                     </Button>
+                   </>
+                 )}
+                 {userState !== 'guest' && (
+                   <Button variant="outline" className="w-full" onClick={async () => await supabase.auth.signOut()}>
+                     Log out
+                   </Button>
+                 )}
+               </div>
+             </SheetContent>
+           </Sheet>
         </div>
       </div>
     </header>

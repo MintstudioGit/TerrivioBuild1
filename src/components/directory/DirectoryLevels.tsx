@@ -33,6 +33,8 @@ import {
   HandHeart
 } from "lucide-react";
 import { cn } from "../../components/ui/utils";
+import { AppPageTopBar } from "../AppPageTopBar";
+import { Button } from "../ui/button";
 import { TAXONOMY, CATEGORIES } from "../../utils/taxonomy";
 import { slugify } from "../../utils/slugify";
 import { SignalExplorer } from "./SignalExplorer";
@@ -259,6 +261,9 @@ function DirectoryExplorerContainer({
 export function DirectoryLevelOne({ model }: { model: string }) {
   return (
     <div className="flex flex-col min-h-screen">
+      <div className="max-w-[1600px] mx-auto w-full px-6 pt-8">
+        <AppPageTopBar right={<Button variant="outline" asChild><Link to="/generator">Open Generator</Link></Button>} />
+      </div>
       <DirectoryHeader 
         align="center"
         badge="Platform Directory"

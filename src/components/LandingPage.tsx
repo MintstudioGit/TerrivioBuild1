@@ -79,11 +79,14 @@ export function LandingPage() {
                   </Link>
                 </Button>
                 <Button size="lg" variant="outline" className="h-14 px-8 text-[var(--text-base)]" asChild>
-                  <Link to="/prompts">
-                    Browse Library
+                  <Link to="/app">
+                    Open App Hub
                   </Link>
                 </Button>
               </motion.div>
+              <div className="text-sm text-muted-foreground">
+                Prefer browsing? <Link to="/prompts" className="text-primary font-medium hover:underline">Explore the Directory</Link>
+              </div>
 
               <div className="flex items-center justify-center lg:justify-start gap-6 text-[var(--text-sm)] text-muted-foreground pt-4">
                 <div className="flex items-center gap-2">

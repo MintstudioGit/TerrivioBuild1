@@ -4,6 +4,20 @@
 export type SignalType = "Quality" | "Speed" | "Accuracy" | "Detail" | "Creative" | "Conversion";
 export type CategoryType = "Development" | "Marketing" | "Sales" | "Content" | "Design" | "General";
 
+// Angle types — these change LOGIC not just tone
+export type AngleType =
+    | "missed_opportunity"
+    | "hidden_risk"
+    | "timing_trigger"
+    | "inefficiency"
+    | "pattern_interrupt"
+    | "social_proof";
+
+// Backward compat alias
+export type VariantType = AngleType;
+
+export type FrameworkType = "RISEN" | "RTF" | "APE" | "RACE";
+
 const PHRASE_REPLACEMENTS: Record<string, string> = {
     "ensure high-quality standards": "use clear structure, precise language, and specific instructions",
     "professional output": "a result that can be used immediately without further clarification",
@@ -243,27 +257,428 @@ export interface VariationResult {
     isLocked: boolean;
 }
 
-export const VARIANT_TEMPLATES = [
-    { approach: "Default", type: "Standard", desc: "Balanced and standard output" },
-    { approach: "Direct", type: "Tone", desc: "To the point, no fluff" },
-    { approach: "Persuasive", type: "Tone", desc: "Focus on conversion and benefits" },
-    { approach: "Detailed", type: "Depth", desc: "Comprehensive coverage" },
-    { approach: "Creative", type: "Style", desc: "Out of the box thinking" },
-    { approach: "Technical", type: "Depth", desc: "Deep technical specifications" },
-    { approach: "Executive", type: "Level", desc: "High-level summary for leaders" },
-    { approach: "Step-by-Step", type: "Format", desc: "Clear instructional steps" },
-    { approach: "QA / Audit", type: "Role", desc: "Critical review mode" },
-    { approach: "Viral", type: "Style", desc: "Optimized for engagement" }
+// Angle templates — 6 real strategic angles that change output LOGIC
+export const ANGLE_TEMPLATES = [
+    {
+        approach: "Missed Opportunity",
+        angle: "missed_opportunity" as AngleType,
+        type: "Angle",
+        desc: "What they're NOT doing but should be"
+    },
+    {
+        approach: "Hidden Risk",
+        angle: "hidden_risk" as AngleType,
+        type: "Angle",
+        desc: "A risk they likely underestimate"
+    },
+    {
+        approach: "Timing Trigger",
+        angle: "timing_trigger" as AngleType,
+        type: "Angle",
+        desc: "Tied to hiring, funding, or growth signals"
+    },
+    {
+        approach: "Inefficiency",
+        angle: "inefficiency" as AngleType,
+        type: "Angle",
+        desc: "Expose waste or manual processes"
+    },
+    {
+        approach: "Pattern Interrupt",
+        angle: "pattern_interrupt" as AngleType,
+        type: "Angle",
+        desc: "Break the expected cold outreach pattern"
+    },
+    {
+        approach: "Social Proof",
+        angle: "social_proof" as AngleType,
+        type: "Angle",
+        desc: "Reference a similar company outcome"
+    },
 ];
 
-export const generateVariations = (basePrompt: string): VariationResult[] => {
-    return VARIANT_TEMPLATES.map((tmpl, i) => ({
-        type: tmpl.type,
-        title: tmpl.approach,
-        content: `[MODIFIER: ${tmpl.approach} Approach]\n\n${basePrompt}\n\nConstraint: Apply ${tmpl.desc.toLowerCase()}.`,
-        isLocked: i > 0 // Only first is free in some contexts
-    }));
+// Backward compat alias — GeneratorPage & PackBuilderView import VARIANT_TEMPLATES
+export const VARIANT_TEMPLATES = ANGLE_TEMPLATES;
+
+interface AngleDefinition {
+    label: string;
+    salesInstruction: string;
+    generalInstruction: string;
+    structure: [string, string, string, string];
+    constraint: string;
+}
+
+const ANGLE_DEFINITIONS: Record<AngleType, AngleDefinition> = {
+    missed_opportunity: {
+        label: "Missed Opportunity",
+        salesInstruction: "Read the CONTEXT 'Evidence' field first. That sentence is what this company says they do. Now identify what segment leader in their space does that they visibly are not. Use the 'Customers' and 'Revenue model' fields to make the gap specific to their segment and motion. Your opening line must reinterpret or reframe the Evidence sentence — not paraphrase it. Do not use generic gaps that could apply to any company. If Evidence is missing → fallback to 'Core activity' + 'Customers'. If both are unknown → output [CONTEXT NEEDED: please edit the context fields].",
+        generalInstruction: "Identify the most important thing missing from the current approach and frame it as an untapped opportunity with measurable upside.",
+        structure: [
+            "Name the specific gap or missed tactic (not generic — tie to their industry or role)",
+            "Show what it's costing them right now (time, revenue, pipeline, positioning)",
+            "Position your solution as the direct unlock for this gap",
+            "One soft CTA — ask if this is on their radar, not for a meeting"
+        ],
+        constraint: "If the gap could apply to any company in any industry → rewrite with more specificity."
+    },
+    hidden_risk: {
+        label: "Hidden Risk",
+        salesInstruction: "Read the CONTEXT 'Evidence' field. That sentence reveals how this company positions itself. Use it to infer what they are implicitly assuming will work perfectly — that is your hidden risk. Then cross-reference with 'High-risk area' if present. Your email must name the risk in terms of their own language (use a word or phrase from the Evidence). Example: if Evidence says 'We deliver leaders with EQ to multiply capital', the risk is 'a wrong leadership hire delays portfolio growth' — not generic churn. Never state a risk that is not traceable to the Evidence or Context fields.",
+        generalInstruction: "Identify the highest-impact risk in the current workflow or approach that is easy to overlook but expensive when it hits.",
+        structure: [
+            "Name the specific risk without catastrophizing it",
+            "Explain why it's easy to miss and when it typically surfaces",
+            "Position your solution as the early-warning or prevention layer",
+            "Soft CTA — offer a quick check or insight, not a demo"
+        ],
+        constraint: "If the risk sounds generic ('security', 'compliance', 'churn') → add the specific trigger condition that makes it real for this prospect."
+    },
+    timing_trigger: {
+        label: "Timing Trigger",
+        salesInstruction: "Read the CONTEXT 'Evidence' field. That sentence positions what this company is actively delivering right now. Use it to identify what inflection event in their business makes this moment different from 6 months ago. Anchor to one specific trigger type: hiring surge, fund deployment, product launch, expansion to a new segment — must be consistent with 'Core activity' and 'Revenue model'. Quote or rephrase one word from Evidence in your opening line to signal you actually read their site. Do not fabricate events you cannot trace to context.",
+        generalInstruction: "Connect the recommendation to a time-sensitive event or inflection point that creates urgency without manufactured pressure.",
+        structure: [
+            "Reference the specific trigger event naturally (not 'I saw your LinkedIn')",
+            "Explain why this moment is different from 3 months ago",
+            "Connect your solution to the need that trigger created",
+            "CTA tied to the window — 'catching you at the right time'"
+        ],
+        constraint: "If there is no real trigger named → do not invent one. Use a different angle."
+    },
+    inefficiency: {
+        label: "Inefficiency",
+        salesInstruction: "Read the CONTEXT 'Evidence' and 'Core activity' fields. The Evidence tells you what they claim to do; Core activity tells you how. Identify the most likely manual step, repeated task, or coordination overhead in that activity. Name it by its actual process name — not 'workflows' or 'efficiency'. Use 'What breaks badly' if present to sharpen the failure mode. Your opening line must describe the friction in terms their team would immediately recognise. If Evidence contains a specific verb ('placing', 'sourcing', 'generating'), front that verb in your description.",
+        generalInstruction: "Pinpoint the exact step in the current workflow that is creating the most friction, rework, or cost — and show what removing it would unlock.",
+        structure: [
+            "Name the specific inefficiency (the manual step, the workaround, the duplicated effort)",
+            "Quantify or estimate the drag it creates",
+            "Show the direct fix — not just 'we automate this' but how specifically",
+            "CTA: ask if this matches what they're dealing with"
+        ],
+        constraint: "If the inefficiency is vague ('streamline workflows') → rewrite with a specific process and measurable waste."
+    },
+    pattern_interrupt: {
+        label: "Pattern Interrupt",
+        salesInstruction: "Read the CONTEXT 'Evidence' field. That is how they describe themselves to the world. Now write the opposite frame — the sharpest, most counter-intuitive observation that reinterprets that sentence in a way they have never heard. Open with it. No greeting, no 'I noticed', no pitch. Use one word or phrase directly from the Evidence to signal specificity. Example: if Evidence says 'We help founders hire fast', your opener could be 'Hiring fast is usually where growth slows.' — a complete reframe. If Evidence is unknown, use 'High-risk area' as the surprise reveal instead.",
+        generalInstruction: "Break the standard structural pattern for this type of content. Deliver the most important point first, remove all setup, and end where most outputs begin.",
+        structure: [
+            "Open with the sharpest possible observation — no preamble",
+            "One sentence that reframes how they think about the problem",
+            "One specific outcome they could achieve differently",
+            "Ultra-light CTA: one word reply or a yes/no question"
+        ],
+        constraint: "If the output reads like any other cold email or content piece → it failed. Rewrite from a completely different entry point."
+    },
+    social_proof: {
+        label: "Social Proof",
+        salesInstruction: "Read the CONTEXT 'Evidence' field. That sentence reveals the outcome this company promises. Build your social proof around a peer company that had the same promise and found out whether it was delivering. Use 'Customers' and 'Revenue model' to make the peer scenario credible — same segment, same motion, same stakes. Your result metric must be traceable: if Evidence mentions 'capital multiplication', the proof metric is portfolio growth speed, not generic ROI. If Evidence is unknown, anchor to 'What breaks badly' — prove you fixed that exact thing.",
+        generalInstruction: "Ground the recommendation in a reference case — similar context, observable outcome, transferable lesson. Make it feel like proof, not a claim.",
+        structure: [
+            "Name the analogous company or scenario (specific enough to be credible)",
+            "State the exact problem they had and how they solved it",
+            "Bridge to this prospect's situation — 'similar setup, similar gap'",
+            "CTA: ask if they're dealing with the same dynamic"
+        ],
+        constraint: "If the social proof is generic ('our clients see 3x ROI') → rewrite with a specific company type, problem, and outcome."
+    }
 };
+
+export const generateVariations = (basePrompt: string): VariationResult[] => {
+    return ANGLE_TEMPLATES.map((tmpl, i) => {
+        const def = ANGLE_DEFINITIONS[tmpl.angle];
+        return {
+            type: tmpl.type,
+            title: tmpl.approach,
+            content: [
+                `ANGLE: ${tmpl.approach.toUpperCase()}`,
+                "",
+                def.generalInstruction,
+                "",
+                "STRUCTURE:",
+                ...def.structure.map((s, n) => `${n + 1}. ${s}`),
+                "",
+                `CONSTRAINT: ${def.constraint}`,
+                "",
+                "BASE TASK:",
+                basePrompt
+            ].join("\n"),
+            isLocked: i > 0
+        };
+    });
+};
+
+export function generateContextualPrompt(
+    basePrompt: string,
+    opts: { websiteContext?: string; yourOffer?: string; industry?: string }
+): string {
+    const contextLines = [
+        opts.industry ? `Industry: ${opts.industry}` : null,
+        opts.websiteContext ? `Website context: ${opts.websiteContext}` : null,
+        opts.yourOffer ? `Offer: ${opts.yourOffer}` : null,
+    ].filter(Boolean) as string[];
+
+    if (!contextLines.length) return basePrompt;
+    return [
+        "Context:",
+        ...contextLines.map((l) => `- ${l}`),
+        "",
+        basePrompt
+    ].join("\n");
+}
+
+// Mirrors StructuredContext from website-scraper — no circular import
+interface ContextShape {
+  what_they_do: string;
+  who_they_serve: string;
+  key_activity?: string;             // what they do repeatedly
+  high_risk_area: string;
+  how_they_make_money: string;
+  what_breaks_if_done_badly: string;
+  evidence?: string;                 // best verbatim sentence from the page
+  confidence?: number;               // 0–100
+  is_valid?: boolean;
+  quality_score?: number;            // legacy compat 0–1
+  // legacy compat fields
+  target_customer?: string;
+  core_motion?: string;
+  likely_problem?: string;
+}
+
+/**
+ * Angle-Context binding: maps extracted company signals → best strategic angle.
+ * Uses new StructuredContext field names. Falls back to legacy compat fields.
+ */
+export function inferBestAngle(ctx: ContextShape): AngleType {
+  const risk     = ctx.high_risk_area           || ctx.likely_problem  || "";
+  const breaks   = ctx.what_breaks_if_done_badly || "";
+  const does     = ctx.what_they_do             || "";
+  const money    = ctx.how_they_make_money      || ctx.core_motion     || "";
+  const serves   = ctx.who_they_serve           || ctx.target_customer || "";
+  const activity = ctx.key_activity             || "";
+  const evidence = ctx.evidence                 || "";
+
+  // Include evidence sentence in the blob for richer signal
+  const blob = [does, risk, breaks, money, serves, activity, evidence].join(" ").toLowerCase();
+
+  if (/manual|process|slow|spreadsheet|copy.paste|time.consuming|hand.made/.test(blob)) return "inefficiency";
+  if (/timing|window|miss|hire|recruit|moment|time.sensitive/.test(blob))               return "timing_trigger";
+  if (/risk|breach|compliance|fail|loss|liability|break/.test(blob))                    return "hidden_risk";
+  if (/compet|behind|gap|market share|miss.*opportunity|not doing/.test(blob))          return "missed_opportunity";
+  if (/proof|result|outcome|case|revenue|customer.*success/.test(blob))                 return "social_proof";
+  return "pattern_interrupt";
+}
+
+export function generateCOSTARPrompt(opts: {
+    useCase: string;
+    outcome: string;
+    role: string;
+    industry: string;
+    signal: SignalType | string;
+    context?: string;
+    structuredContext?: ContextShape & { sender_what?: string; your_offer?: string };
+    variant?: VariantType;
+}): string {
+    const angleKey = (opts.variant as AngleType) || "missed_opportunity";
+    const def = ANGLE_DEFINITIONS[angleKey] || ANGLE_DEFINITIONS["missed_opportunity"];
+    const isSales = deriveCategory(opts.useCase) === "Sales";
+    const role = opts.role || "B2B Outbound Strategist";
+    const industry = opts.industry || "B2B";
+    const useCase = opts.useCase || "cold email";
+    const outcome = opts.outcome || "get a reply";
+
+    // ── Context Block Builder ──────────────────────────────────────────────────
+    // Structured context → clean labelled block. Skip "unknown" values.
+    // Evidence line = the anchor every angle must ground itself in.
+    let contextBlock = "";
+    if (opts.structuredContext) {
+        const sc = opts.structuredContext;
+        const ok = (v?: string) => !!(v && v !== "unknown" && v.trim().length > 3);
+        const lines: string[] = ["CONTEXT:"];
+        if (ok(sc.what_they_do))               lines.push(`- Business: ${sc.what_they_do}`);
+        if (ok(sc.who_they_serve ?? sc.target_customer)) lines.push(`- Customers: ${sc.who_they_serve ?? sc.target_customer}`);
+        if (ok(sc.key_activity))               lines.push(`- Core activity: ${sc.key_activity}`);
+        if (ok(sc.high_risk_area))             lines.push(`- High-risk area: ${sc.high_risk_area}`);
+        if (ok(sc.how_they_make_money ?? sc.core_motion)) lines.push(`- Revenue model: ${sc.how_they_make_money ?? sc.core_motion}`);
+        if (ok(sc.what_breaks_if_done_badly ?? sc.likely_problem)) lines.push(`- What breaks badly: ${sc.what_breaks_if_done_badly ?? sc.likely_problem}`);
+        // Evidence: the verbatim sentence that grounds everything — this is critical
+        if (ok(sc.evidence))                   lines.push(`- Evidence (from their site): "${sc.evidence}"`);
+        if (ok(sc.sender_what))                lines.push(`- Sender company: ${sc.sender_what}`);
+        if (ok(sc.your_offer))                 lines.push(`- Offer: ${sc.your_offer}`);
+        if (lines.length > 1) contextBlock = "\n" + lines.join("\n");
+    } else if (opts.context) {
+        const clean = opts.context
+            .replace(/Title:|URL Source|Source:|Markdown Content:/gi, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 300);
+        if (clean.length > 20) contextBlock = `\nCONTEXT:\n- ${clean}`;
+    }
+
+    if (isSales) {
+        // New master prompt — forces specificity, angle, and hard constraints
+        return [
+            `You are an elite B2B outbound strategist.`,
+            `Role: ${role}`,
+            `Industry: ${industry}`,
+            "",
+            "TASK:",
+            `Write a ${useCase} that gets a reply, not a meeting.`,
+            "",
+            "ANGLE:",
+            `${def.label} — ${def.salesInstruction}`,
+            "",
+            "STRUCTURE:",
+            ...def.structure.map((s, i) => `${i + 1}. ${s}`),
+            "",
+            "RULES:",
+            "- Max 75 words",
+            "- No buzzwords",
+            "- No generic phrases (\"improve efficiency\", \"drive growth\", \"streamline workflows\")",
+            "- Mention the company or prospect's context once",
+            "- One reply-based CTA (not a calendar link, not \"book a demo\")",
+            "- Must feel written by a peer, not a marketer",
+            "",
+            "SELF-CHECK:",
+            `- ${def.constraint}`,
+            "- If this email could be sent to any company → rewrite",
+            "- If there is no clear insight in line 1 → rewrite",
+            "- If the CTA asks for time before earning it → rewrite",
+            "- If the Evidence field is present and your email does not reference or reframe it → rewrite",
+            "",
+            "GOAL:",
+            `Make the reader think: \"this is relevant to me right now.\"`,
+            contextBlock
+        ].filter(Boolean).join("\n");
+    }
+
+    // Non-sales: angle-driven structured prompt
+    return [
+        `You are a ${role} specializing in ${industry}.`,
+        "",
+        "TASK:",
+        `Create ${useCase} to ${outcome}.`,
+        "",
+        "ANGLE:",
+        `${def.label} — ${def.generalInstruction}`,
+        "",
+        "STRUCTURE:",
+        ...def.structure.map((s, i) => `${i + 1}. ${s}`),
+        "",
+        "CONSTRAINTS:",
+        "- Be specific — if a statement applies to any company, rewrite it",
+        "- No generic filler phrases",
+        "- Every claim must be actionable or verifiable",
+        `- Optimization signal: ${opts.signal || "Quality"}`,
+        "",
+        "SELF-CHECK:",
+        `- ${def.constraint}`,
+        "- If output is generic → regenerate with more specificity",
+        "",
+        "DELIVER:",
+        "A clean, ready-to-use output. No preamble. No meta-commentary.",
+        contextBlock
+    ].filter(Boolean).join("\n");
+}
+
+export function generateFrameworkPrompt(opts: {
+    framework: FrameworkType;
+    basePrompt: string;
+    useCase: string;
+    outcome: string;
+    role: string;
+    industry: string;
+    signal: SignalType | string;
+    context?: string;
+    approach?: string;
+}): string {
+    const header = `Framework: ${opts.framework}${opts.approach ? ` (${opts.approach})` : ""}`;
+    const roleLine = opts.role ? `Role: ${opts.role}` : "Role: Expert";
+    const industryLine = opts.industry ? `Industry: ${opts.industry}` : "";
+    const contextLine = opts.context ? `Context: ${opts.context}` : "";
+    const outcomeLine = opts.outcome ? `Outcome: ${opts.outcome}` : "";
+    const signalLine = opts.signal ? `Optimization: ${opts.signal}` : "";
+
+    if (opts.framework === "RTF") {
+        return [
+            header,
+            roleLine,
+            industryLine,
+            contextLine,
+            "",
+            "Task",
+            opts.basePrompt,
+            "",
+            "Format",
+            "Provide a structured, ready-to-use output with clear sections and constraints.",
+            "",
+            outcomeLine,
+            signalLine
+        ].filter(Boolean).join("\n");
+    }
+
+    if (opts.framework === "APE") {
+        return [
+            header,
+            roleLine,
+            industryLine,
+            contextLine,
+            "",
+            "Action",
+            opts.basePrompt,
+            "",
+            "Purpose",
+            opts.outcome || "Achieve the desired outcome.",
+            "",
+            "Execution",
+            "List steps, constraints, and formatting requirements explicitly.",
+            "",
+            signalLine
+        ].filter(Boolean).join("\n");
+    }
+
+    if (opts.framework === "RACE") {
+        return [
+            header,
+            roleLine,
+            industryLine,
+            "",
+            "Action",
+            opts.basePrompt,
+            "",
+            "Context",
+            contextLine || "Use only the provided inputs.",
+            "",
+            "Expectations",
+            "Clear structure, precise language, and measurable success criteria.",
+            "",
+            outcomeLine,
+            signalLine
+        ].filter(Boolean).join("\n");
+    }
+
+    // RISEN
+    return [
+        header,
+        roleLine,
+        industryLine,
+        "",
+        "Instructions",
+        opts.basePrompt,
+        "",
+        "Steps",
+        "1. Clarify constraints and assumptions.",
+        "2. Produce the output with structure.",
+        "3. Validate against success criteria.",
+        "",
+        "End Goal",
+        opts.outcome || "Deliver a usable, high-signal output.",
+        "",
+        "Narrowing",
+        contextLine || "Use only the provided context.",
+        "",
+        signalLine
+    ].filter(Boolean).join("\n");
+}
 
 export interface WorkflowStep {
     name: string;
@@ -454,7 +869,7 @@ export const WORKFLOW_PACKS: WorkflowPack[] = [
 
 // --- ADDED MISSING EXPORT ---
 
-export const generateWorkflowSequence = (packId: string): { 
+export const generateWorkflowSequence = (packId: string, _options?: { variationMode?: "consistent" | "mixed"; variantNum?: number }): { 
     stepName: string, 
     role: string, 
     signal: SignalType, 

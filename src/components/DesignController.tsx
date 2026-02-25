@@ -7,7 +7,7 @@ import { projectId, publicAnonKey } from "../utils/supabase/info";
 
 // --- Types ---
 
-export type UserState = 'guest' | 'free' | 'pro';
+export type UserState = 'guest' | 'free' | 'pro' | 'team' | 'agency';
 
 interface DesignContextType {
   userState: UserState;
@@ -100,7 +100,7 @@ export function DesignProvider({ children }: { children: React.ReactNode }) {
 // --- Controller UI Component ---
 
 function DesignController() {
-  const { userState, setUserState, setShowController, session, supabase } = useDesignContext();
+  const { userState, setUserState, setShowController, session, supabase, isInitialized } = useDesignContext();
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Helper to persist state (simulating admin/webhook action)
@@ -175,7 +175,7 @@ function DesignController() {
         {/* User State Switcher (Manual override for testing Pro UI) */}
         <div className="space-y-2">
           <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Simulate State</label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             <button
               onClick={() => handleStateChange('guest')}
               className={cn(
@@ -201,7 +201,7 @@ function DesignController() {
               <User className="w-4 h-4 mb-1" />
               Free
             </button>
-
+            
             <button
               onClick={() => handleStateChange('pro')}
               className={cn(
@@ -214,13 +214,39 @@ function DesignController() {
               <UserCheck className="w-4 h-4 mb-1" />
               Pro
             </button>
+            
+            <button
+              onClick={() => handleStateChange('team')}
+              className={cn(
+                "flex flex-col items-center justify-center gap-1 p-2 rounded-lg border transition-all text-xs font-medium",
+                userState === 'team' 
+                  ? "bg-primary/10 border-primary text-primary ring-1 ring-primary/20" 
+                  : "bg-background border-border hover:bg-muted text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <UserCheck className="w-4 h-4 mb-1" />
+              Team
+            </button>
+
+            <button
+              onClick={() => handleStateChange('agency')}
+              className={cn(
+                "flex flex-col items-center justify-center gap-1 p-2 rounded-lg border transition-all text-xs font-medium",
+                userState === 'agency' 
+                  ? "bg-primary/10 border-primary text-primary ring-1 ring-primary/20" 
+                  : "bg-background border-border hover:bg-muted text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <UserCheck className="w-4 h-4 mb-1" />
+              Agency
+            </button>
           </div>
         </div>
 
         {/* Auth Status */}
         <div className="text-xs bg-muted/30 p-2 rounded border border-border/50 flex items-center justify-between">
            <span className="text-muted-foreground">
-             {session ? `Logged in as ${session.user.email}` : "Not logged in"}
+             {!isInitialized ? "Loading..." : session ? `Logged in as ${session.user.email}` : "Not logged in"}
            </span>
            {session && (
              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleSignOut}>

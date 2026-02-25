@@ -1287,12 +1287,34 @@ function TwoLevelSidebar() {
   );
 }
 
-import { DirectoryPage } from "./DirectoryPage";
-
-export function Frame760() {
+export function SidebarDemo() {
   return (
-    <div className="bg-white box-border content-stretch flex flex-col items-stretch justify-start p-0 relative size-full min-h-screen overflow-auto">
-      <DirectoryPage />
+    <div className="min-h-screen bg-neutral-950 text-white flex">
+      <TwoLevelSidebar />
+      <div className="flex-1 p-10">
+        <div className="max-w-3xl space-y-4">
+          <h1 className="text-3xl font-semibold tracking-tight">Sidebar Demo</h1>
+          <p className="text-neutral-300">
+            This page showcases the two-level sidebar pattern for potential
+            dashboard layouts. Use it as a visual reference or adapt it for
+            product surfaces that need dense navigation.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+              <h2 className="font-semibold">Use Cases</h2>
+              <p className="text-sm text-neutral-400 mt-2">
+                Admin dashboards, analytics hubs, or multi-workspace tools.
+              </p>
+            </div>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+              <h2 className="font-semibold">Notes</h2>
+              <p className="text-sm text-neutral-400 mt-2">
+                Built with Carbon icons and a soft-spring interaction curve.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

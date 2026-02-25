@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Label } from "./ui/label";
 import { Badge } from "./ui/badge";
@@ -12,25 +13,148 @@ import {
   Lock, ArrowRight, Copy, Terminal, Wand2, Sparkles, Zap, Target, Layers, 
   Briefcase, CheckCircle2, Package, Play, Download, Save, BarChart3, 
   Search, Filter, ArrowLeft, Grid, List as ListIcon, FileText, ChevronDown, ChevronRight,
-  Maximize2, Minimize2, RefreshCw, SlidersHorizontal, LayoutTemplate
+  Minimize2, RefreshCw, SlidersHorizontal, LayoutTemplate, AlertTriangle, TrendingUp
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   SignalType, 
   CategoryType, 
-  generateEnginePrompt, 
-  generateVariations, 
+  FrameworkType,
+  AngleType,
   generateWorkflowSequence, 
   WORKFLOW_PACKS, 
   deriveCategory,
   WorkflowPack,
   VARIANT_TEMPLATES,
-  cleanText
+  cleanText,
+  generateCOSTARPrompt,
+  generateFrameworkPrompt,
+  inferBestAngle
 } from "./prompt-engine";
 import { generateWithQualityGate } from "./prompt-quality-gate";
 import { OfferExtractorComponent, type ExtractedOffer } from "./OfferExtractorComponent";
+import { PreviewPanel } from "./PreviewPanel";
+import { scrapeWebsiteContext, type StructuredContext } from "../utils/website-scraper";
+import { scoreContext, scoreColour, scoreBadgeClass } from "../utils/context-scorer";
+import { scoreOutput, outputScoreEmoji, outputScoreBadgeClass } from "../utils/output-scorer";
+import { improveContext } from "../utils/context-improver";
+import { runEnrichmentWaterfall, extractDomain, type WaterfallOptions } from "../utils/enrichment-waterfall";
+import type { EnrichmentResult } from "../utils/enrichment-types";
+import { VARIANT_TYPE_MAP } from "./generator/generator-constants";
 
 // --- COMPONENTS ---
+
+// Shows the auto-enrich pipeline steps + current status inline below a scrape field
+function ScrapePhaseCard({ phase }: { phase: string }) {
+  const isActive  = phase.includes("...");
+  const isWarning = phase.includes("sign in");
+  const isDone    = !isActive && !isWarning;
+
+  // Derive step states from phase string
+  const step1Done = true; // scrape always ran first
+  const step2Active = phase.includes("LLM repair") || phase.includes("repair...");
+  const step2Done   = phase.includes("Improved") || phase.includes("Still weak") || phase.includes("repair skipped") || phase.includes("enrichment signals");
+  const step2Skip   = phase.includes("repair skipped");
+  const step3Active = phase.includes("LinkedIn") || phase.includes("external signals");
+  const step3Done   = phase.includes("enrichment signals injected");
+
+  const borderClass = isWarning
+    ? "border-amber-500/40 bg-amber-500/5"
+    : isDone
+    ? "border-emerald-500/30 bg-emerald-500/5"
+    : "border-primary/20 bg-primary/5";
+
+  type StepState = "pending" | "active" | "done" | "skip";
+
+  function StepIcon({ state }: { state: StepState }) {
+    if (state === "active") return (
+      <span className="w-4 h-4 rounded-full border-2 border-primary flex items-center justify-center shrink-0">
+        <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+      </span>
+    );
+    if (state === "done") return (
+      <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
+        <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 12 12" fill="none">
+          <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+    );
+    if (state === "skip") return (
+      <span className="w-4 h-4 rounded-full bg-muted flex items-center justify-center shrink-0">
+        <span className="text-[8px] text-muted-foreground font-bold">—</span>
+      </span>
+    );
+    return <span className="w-4 h-4 rounded-full border-2 border-border shrink-0" />;
+  }
+
+  const steps: { label: string; sub: string; state: StepState }[] = [
+    {
+      label: "Website scrape",
+      sub: step1Done ? "Extracted raw page text" : "Reading page...",
+      state: step1Done ? "done" : "active",
+    },
+    {
+      label: "LLM context repair",
+      sub: step2Skip
+        ? "Skipped — moving to external sources"
+        : step2Done
+        ? "Fields rewritten from raw text"
+        : step2Active
+        ? "Rewriting fields using raw text..."
+        : "Runs if score < 60",
+      state: step2Skip ? "skip" : step2Done ? "done" : step2Active ? "active" : "pending",
+    },
+    {
+      label: "Deep enrich (LinkedIn + Tech)",
+      sub: step3Done
+        ? "Signals injected into prompt"
+        : step3Active
+        ? "Fetching LinkedIn company + tech stack..."
+        : "Runs if score still < 60 after repair",
+      state: step3Done ? "done" : step3Active ? "active" : "pending",
+    },
+  ];
+
+  return (
+    <div className={`rounded-lg border p-3 space-y-2 ${borderClass}`}>
+      <div className="flex items-center gap-1.5 mb-0.5">
+        {isActive && <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />}
+        {isWarning && <span className="text-amber-500 text-[10px]">⚠️</span>}
+        {isDone && !isWarning && <span className="text-emerald-500 text-[10px]">✓</span>}
+        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          Context Intelligence Pipeline
+        </span>
+      </div>
+
+      <div className="space-y-1.5">
+        {steps.map((step, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <div className="mt-0.5">
+              <StepIcon state={step.state} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-[11px] font-semibold leading-tight ${
+                step.state === "active" ? "text-primary" :
+                step.state === "done" ? "text-foreground" :
+                "text-muted-foreground"
+              }`}>{step.label}</p>
+              <p className="text-[10px] text-muted-foreground leading-tight">{step.sub}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Final status line */}
+      <p className={`text-[10px] font-medium pt-1 border-t ${
+        isWarning ? "border-amber-500/20 text-amber-600" :
+        isDone ? "border-emerald-500/20 text-emerald-600" :
+        "border-primary/10 text-primary"
+      }`}>
+        {phase}
+      </p>
+    </div>
+  );
+}
 
 function ActionLockModal({ isOpen, onClose, action, description }: { isOpen: boolean, onClose: () => void, action: string, description?: string }) {
   if (!isOpen) return null;
@@ -113,13 +237,16 @@ const INDUSTRIES_BY_CATEGORY: Record<string, string[]> = {
   General: ["Technology", "Healthcare", "Finance", "Retail", "Education", "Manufacturing"]
 };
 
+const FRAMEWORK_OPTIONS: FrameworkType[] = ["RISEN", "RTF", "APE", "RACE"];
+
 // --- PACK BUILDER VIEW (Re-implemented for context) ---
 
 function PackBuilderView({ onBack }: { onBack: () => void }) {
   const [searchParams] = useSearchParams();
   const initialPackId = searchParams.get("pack");
 
-  const { userState } = useDesignContext();
+  const { userState, session } = useDesignContext();
+  const navigate = useNavigate();
   const isPro = userState === 'pro';
   
   const [selectedPackId, setSelectedPackId] = useState<string>(initialPackId || "");
@@ -137,6 +264,9 @@ function PackBuilderView({ onBack }: { onBack: () => void }) {
   }[] | null>(null);
   const [showLock, setShowLock] = useState(false);
   const [selectedVariants, setSelectedVariants] = useState<Record<number, number[]>>({});
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPrompt, setPreviewPrompt] = useState("");
+  const [previewApproach, setPreviewApproach] = useState<string | undefined>(undefined);
 
   // --- PREVIEW / TEASER LOGIC ---
   // We want to show a "Sample" of the first step to prove quality
@@ -228,8 +358,20 @@ function PackBuilderView({ onBack }: { onBack: () => void }) {
       navigator.clipboard.writeText(text);
   };
 
+  const openPreview = (prompt: string, approach?: string) => {
+    setPreviewPrompt(prompt);
+    setPreviewApproach(approach);
+    setPreviewOpen(true);
+  };
+
+  const sendToPipeline = (prompt: string) => {
+    localStorage.setItem("pipeline_seed_prompt", prompt);
+    navigate("/pipeline");
+  };
+
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-[1400px] mx-auto pb-20">
+    <>
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-[1400px] mx-auto pb-20">
       <ActionLockModal isOpen={showLock} onClose={() => setShowLock(false)} action="Build Prompt Packs" />
 
       <div className="mb-8 flex items-center justify-between">
@@ -449,6 +591,34 @@ function PackBuilderView({ onBack }: { onBack: () => void }) {
                                              ? cleanText(generatedPack[idx].variants[variantId].content) 
                                              : generatedPack[idx].prompt
                                          }
+                                         <div className="mt-3 flex items-center gap-2">
+                                           <Button
+                                             variant="ghost"
+                                             size="sm"
+                                             className="h-7 text-xs text-muted-foreground hover:text-primary"
+                                             onClick={() => {
+                                               const content = generatedPack[idx].variants && generatedPack[idx].variants[variantId]
+                                                 ? cleanText(generatedPack[idx].variants[variantId].content)
+                                                 : generatedPack[idx].prompt;
+                                               openPreview(content, VARIANT_TEMPLATES[variantId]?.approach);
+                                             }}
+                                           >
+                                             <Play className="w-3 h-3 mr-1.5" /> Preview Output
+                                           </Button>
+                                           <Button
+                                             variant="ghost"
+                                             size="sm"
+                                             className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                                             onClick={() => {
+                                               const content = generatedPack[idx].variants && generatedPack[idx].variants[variantId]
+                                                 ? cleanText(generatedPack[idx].variants[variantId].content)
+                                                 : generatedPack[idx].prompt;
+                                               copyToClipboard(content);
+                                             }}
+                                           >
+                                             <Copy className="w-3 h-3 mr-1.5" /> Copy
+                                           </Button>
+                                         </div>
                                       </div>
                                    ))}
                                 </div>
@@ -477,7 +647,24 @@ function PackBuilderView({ onBack }: { onBack: () => void }) {
           </div>
         </div>
       )}
-    </motion.div>
+      </motion.div>
+
+      <PreviewPanel
+        isOpen={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        prompt={previewPrompt}
+        promptApproach={previewApproach}
+        onSendToPipeline={sendToPipeline}
+      />
+      {previewPrompt && (
+        <button
+          onClick={() => setPreviewOpen(true)}
+          className="fixed bottom-24 right-6 z-[90] rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 px-4 py-2 text-xs font-bold uppercase tracking-wider hover:opacity-90 transition-opacity"
+        >
+          Reopen Preview
+        </button>
+      )}
+    </>
   );
 }
 
@@ -501,6 +688,17 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
   const [industry, setIndustry] = useState("");
   const [category, setCategory] = useState<CategoryType>("General");
   const [signal, setSignal] = useState<SignalType>("Quality");
+  const [useCostar, setUseCostar] = useState(true);
+  const [framework, setFramework] = useState<FrameworkType>("RISEN");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [websiteContext, setWebsiteContext] = useState("");
+  const [leadWebsiteUrl, setLeadWebsiteUrl] = useState("");
+  const [leadWebsiteContext, setLeadWebsiteContext] = useState("");
+  const [yourOffer, setYourOffer] = useState("");
+  const [scrapeStatus, setScrapeStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [leadScrapeStatus, setLeadScrapeStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [isScraping, setIsScraping] = useState(false);
+  const [isLeadScraping, setIsLeadScraping] = useState(false);
   
   // Persistence
   useEffect(() => {
@@ -526,18 +724,168 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
     }));
   }, [category, useCase, role, industry, outcome, signal]);
 
+  // Structured context from scraping (replaces raw text dumps)
+  const [senderContext, setSenderContext] = useState<StructuredContext | null>(null);
+  const [leadContext, setLeadContext] = useState<StructuredContext | null>(null);
+  const [suggestedAngle, setSuggestedAngle] = useState<AngleType | null>(null);
+  // User-edited overrides for context fields
+  const [editSenderOpen, setEditSenderOpen] = useState(false);
+  const [editLeadOpen, setEditLeadOpen] = useState(false);
+  const [editedSenderCtx, setEditedSenderCtx] = useState<StructuredContext | null>(null);
+  const [editedLeadCtx, setEditedLeadCtx] = useState<StructuredContext | null>(null);
+
+  // Raw scraped text (for LLM context repair)
+  const [senderRawText, setSenderRawText] = useState<string>("");
+  const [leadRawText, setLeadRawText] = useState<string>("");
+  const [isImprovingCtx, setIsImprovingCtx] = useState(false);
+  const [improvedCtxMessage, setImprovedCtxMessage] = useState<string | null>(null);
+
+  // Enrichment waterfall
+  const [enrichmentResult, setEnrichmentResult] = useState<EnrichmentResult | null>(null);
+  const [isEnriching, setIsEnriching] = useState(false);
+  // Per-scrape auto-pipeline phase labels
+  const [senderScrapePhase, setSenderScrapePhase] = useState<string | null>(null);
+  const [leadScrapePhase, setLeadScrapePhase] = useState<string | null>(null);
+
+  // Core enrich runner — accepts explicit domain so it can be called automatically
+  const runEnrich = async (domain: string): Promise<EnrichmentResult | null> => {
+    if (!session) return null;
+    setIsEnriching(true);
+    try {
+      const result = await runEnrichmentWaterfall({
+        domain,
+        sources: ["linkedin", "tech"],
+        accessToken: session.access_token,
+        timeoutMs: 20_000,
+      });
+      setEnrichmentResult(result);
+      return result;
+    } catch {
+      return null;
+    } finally {
+      setIsEnriching(false);
+    }
+  };
+
+  // Manual "Deep Enrich" button still works
+  const handleEnrich = async () => {
+    const targetUrl = leadWebsiteUrl || websiteUrl;
+    if (!targetUrl) return;
+    const result = await runEnrich(extractDomain(targetUrl));
+    if (!result) toast.error("Enrichment failed", { description: "Could not reach enrichment service." });
+  };
+
+  // Full auto-pipeline: scrape → LLM improve (if weak) → deep enrich (if still weak)
+  const runScrapeAutoEnrich = async (
+    url: string,
+    setPhase: (p: string | null) => void,
+    setCtx: (c: StructuredContext) => void,
+    setRawText: (t: string) => void,
+    setSummary: (s: string) => void,
+    setStatus: (s: "idle" | "ok" | "error") => void,
+    setEditedCtx: (c: StructuredContext | null) => void,
+  ) => {
+    setPhase("Scraping...");
+    setStatus("idle");
+    let ctx: StructuredContext;
+    let raw: string;
+    try {
+      const res = await scrapeWebsiteContext(url);
+      ctx = res.structured;
+      raw = res.rawText ?? "";
+      setSummary(res.summary);
+      setCtx(ctx);
+      setRawText(raw);
+      setStatus("ok");
+    } catch {
+      setStatus("error");
+      setPhase(null);
+      return;
+    }
+
+    const initialConf = ctx.confidence ?? 0;
+
+    // Phase 2: LLM improve if score < 60 and user is signed in
+    if (initialConf < 60 && session) {
+      setPhase("Score low ("+initialConf+"/100) — running LLM repair...");
+      try {
+        const improved = await improveContext(ctx, raw, session.access_token);
+        ctx = improved;
+        setEditedCtx(improved);
+        const newConf = improved.confidence ?? 0;
+
+        // Phase 3: deep enrich if still weak
+        if (newConf < 60) {
+          setPhase("Still weak ("+newConf+"/100) — fetching LinkedIn + tech stack...");
+          await runEnrich(extractDomain(url));
+          setPhase("Done — enrichment signals injected into prompt");
+        } else {
+          setPhase("Improved to "+newConf+"/100 ✓");
+        }
+      } catch {
+        // LLM improve failed — try enrichment anyway
+        setPhase("LLM repair skipped — fetching external signals...");
+        await runEnrich(extractDomain(url));
+        setPhase("Done — enrichment signals injected into prompt");
+      }
+    } else if (initialConf < 60) {
+      // No session — skip LLM improve, still try enrichment
+      setPhase("Score low ("+initialConf+"/100) — sign in to auto-repair");
+    } else {
+      setPhase(null); // Good score, no message needed
+    }
+  };
+
+  useEffect(() => {
+    const ctx = leadContext ?? senderContext;
+    if (ctx) setSuggestedAngle(inferBestAngle(ctx));
+  }, [leadContext, senderContext]);
+
+  // Deterministic multi-dim context quality score (updates live with edits)
+  const contextScore = useMemo(() => {
+    const active = editedLeadCtx ?? leadContext ?? editedSenderCtx ?? senderContext;
+    if (!active) return null;
+    return scoreContext(active);
+  }, [leadContext, senderContext, editedLeadCtx, editedSenderCtx]);
+
+  const handleImproveContext = async () => {
+    const activeCtx = editedLeadCtx ?? leadContext ?? editedSenderCtx ?? senderContext;
+    const rawText = leadRawText || senderRawText;
+    if (!activeCtx || !session) return;
+    setIsImprovingCtx(true);
+    setImprovedCtxMessage(null);
+    try {
+      const improved = await improveContext(activeCtx, rawText, session.access_token);
+      if (leadContext || editedLeadCtx) {
+        setEditedLeadCtx(improved);
+      } else {
+        setEditedSenderCtx(improved);
+      }
+      const newScore = improved.confidence ?? 0;
+      setImprovedCtxMessage(`Context improved → ${newScore}/100 confidence`);
+    } catch (err) {
+      toast.error("Could not improve context", { description: "Try editing the fields manually." });
+    } finally {
+      setIsImprovingCtx(false);
+    }
+  };
+
   // Matrix State (Wow Effect)
   const [selectedApproaches, setSelectedApproaches] = useState<number[]>([0]); // Default selected
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedResults, setGeneratedResults] = useState<{
     approach: string,
     type: string,
-    content: string
+    content: string,
+    outputScore: number,
   }[] | null>(null);
 
   const [showLock, setShowLock] = useState(false);
   const [showWorkflowUpsell, setShowWorkflowUpsell] = useState(false);
   const [showSaveLock, setShowSaveLock] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPrompt, setPreviewPrompt] = useState("");
+  const [previewApproach, setPreviewApproach] = useState<string | undefined>(undefined);
 
   const toggleApproach = (index: number) => {
     if (selectedApproaches.includes(index)) {
@@ -606,17 +954,64 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
         return;
       }
       
+      // Context Compression: use structured context when available, never raw dump
+      // editedCtx overrides scraped ctx if user manually corrected fields
+      const activeLead   = editedLeadCtx   ?? leadContext   ?? null;
+      const activeSender = editedSenderCtx ?? senderContext ?? null;
+      const primaryCtx   = activeLead ?? activeSender ?? null;
+
+      // Quality gate: warn if context was scraped but confidence < 60 AND not manually edited
+      if (primaryCtx && (primaryCtx.confidence ?? 0) < 60 && !editedLeadCtx && !editedSenderCtx) {
+        setIsGenerating(false);
+        toast.error("Context too generic — outputs will be low quality", {
+          description: "The scraped page didn't yield specific enough signal. Edit the Evidence field or paste a sentence from their site."
+        });
+        return;
+      }
+
+      const structuredCtxForPrompt = primaryCtx ? {
+        ...primaryCtx,
+        sender_what: (activeSender && activeSender !== primaryCtx) ? activeSender.what_they_do : undefined,
+        your_offer: yourOffer ? yourOffer.slice(0, 150) : undefined,
+      } : undefined;
+      // Text fallback for framework prompts (no structured support)
+      // If enrichment ran, splice top signals into the context string for richer outputs
+      const enrichedExtra = enrichmentResult?.enriched_context ?? "";
+      const textCtxFallback = primaryCtx
+        ? [[primaryCtx.what_they_do, primaryCtx.evidence, primaryCtx.high_risk_area, primaryCtx.what_breaks_if_done_badly, yourOffer]
+            .filter(v => v && v !== "unknown").join(" | "), enrichedExtra].filter(Boolean).join("\n").slice(0, 700)
+        : ([enrichedExtra, yourOffer].filter(Boolean).join("\n") || undefined);
+
       const results = selectedApproaches.map(idx => {
         const tmpl = VARIANT_TEMPLATES[idx];
-        const variation = generateVariations(basePrompt).find(v => v.title === tmpl.approach);
-        
-        // If exact match not found in helper (helper only returns 4), generate custom
-        const content = variation ? variation.content : `[MODIFIER: ${tmpl.approach} Approach]\n\n${basePrompt}\n\nConstraint: Apply ${tmpl.desc.toLowerCase()}.`;
+        const content = useCostar
+          ? generateCOSTARPrompt({
+              useCase,
+              outcome,
+              role,
+              industry,
+              signal,
+              structuredContext: structuredCtxForPrompt,
+              context: structuredCtxForPrompt ? undefined : textCtxFallback,
+              variant: VARIANT_TYPE_MAP[tmpl.approach]
+            })
+          : generateFrameworkPrompt({
+              framework,
+              basePrompt,
+              useCase,
+              outcome,
+              role,
+              industry,
+              signal,
+              context: textCtxFallback,
+              approach: tmpl.approach
+            });
         
         return {
           approach: tmpl.approach,
           type: tmpl.type,
-          content: cleanText(content)
+          content,
+          outputScore: scoreOutput(content, structuredCtxForPrompt as StructuredContext | undefined).total,
         };
       });
 
@@ -630,6 +1025,17 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const openPreview = (prompt: string, approach?: string) => {
+    setPreviewPrompt(prompt);
+    setPreviewApproach(approach);
+    setPreviewOpen(true);
+  };
+
+  const sendToPipeline = (prompt: string) => {
+    localStorage.setItem("pipeline_seed_prompt", prompt);
+    navigate("/pipeline");
   };
 
   const handleSave = async (content: string, type: string) => {
@@ -769,7 +1175,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
       <div className="max-w-[1600px] mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
         {/* LEFT: Inputs */}
-        <div className="lg:col-span-4 space-y-6">
+          <div className="lg:col-span-4 space-y-6">
            <div className="bg-card border border-border rounded-xl shadow-sm p-6 sticky top-40 space-y-6">
               <div className="flex items-center gap-2 mb-2">
                  <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
@@ -856,6 +1262,254 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                         </SelectContent>
                     </Select>
                  </div>
+
+                 {/* Context */}
+                 <div className="pt-4 border-t border-border space-y-3">
+                    <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Context</Label>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                         <Input
+                           placeholder="Your website (optional)"
+                           value={websiteUrl}
+                           onChange={(e) => { setWebsiteUrl(e.target.value); setScrapeStatus("idle"); }}
+                           className="h-10"
+                         />
+                         <Button
+                           variant="outline"
+                           size="sm"
+                           className="h-10"
+                           disabled={!websiteUrl.trim() || isScraping}
+                           onClick={async () => {
+                             setIsScraping(true);
+                             await runScrapeAutoEnrich(
+                               websiteUrl,
+                               setSenderScrapePhase,
+                               setSenderContext,
+                               setSenderRawText,
+                               setWebsiteContext,
+                               setScrapeStatus,
+                               setEditedSenderCtx,
+                             );
+                             setIsScraping(false);
+                           }}
+                         >
+                           {isScraping ? "Scraping..." : "Scrape"}
+                         </Button>
+                      </div>
+                      {senderScrapePhase && <ScrapePhaseCard phase={senderScrapePhase} />}
+                      {senderContext && (() => {
+                        const sc = editedSenderCtx ?? senderContext;
+                        const conf = sc.confidence ?? Math.round((sc.quality_score ?? 0) * 100);
+                        const isWeak = conf < 60;
+                        return (
+                          <div className={`rounded-md border p-3 space-y-1 ${isWeak ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <p className={`text-[9px] font-bold uppercase tracking-wider ${isWeak ? "text-amber-600" : "text-emerald-600"}`}>Your Company — Extracted</p>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${isWeak ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>{conf}/100{isWeak ? " ⚠️" : ""}</span>
+                                <button onClick={() => setEditSenderOpen(v => !v)} className={`text-[9px] hover:underline ${isWeak ? "text-amber-700" : "text-emerald-700"}`}>{editSenderOpen ? "Done" : "Edit"}</button>
+                              </div>
+                            </div>
+                            {isWeak && !editSenderOpen && (
+                              <p className="text-[10px] text-amber-700 mb-1">⚠️ Context too generic — edit Evidence field to improve output quality</p>
+                            )}
+                            {editSenderOpen ? (
+                              <div className="space-y-1.5">
+                                {(["what_they_do", "who_they_serve", "key_activity", "how_they_make_money", "evidence"] as const).map(field => (
+                                  <div key={field}>
+                                    <p className="text-[9px] text-emerald-700 mb-0.5 capitalize">{field === "evidence" ? "Evidence (verbatim from site)" : field.replace(/_/g, " ")}</p>
+                                    <input
+                                      className="w-full text-[11px] bg-background border border-border rounded px-2 py-1"
+                                      value={((editedSenderCtx ?? senderContext) as Record<string, unknown>)[field] === "unknown" ? "" : String(((editedSenderCtx ?? senderContext) as Record<string, unknown>)[field] ?? "")}
+                                      placeholder={field === "evidence" ? "Paste a sentence from their website..." : `Enter ${field.replace(/_/g, " ")}...`}
+                                      onChange={e => {
+                                        const base = editedSenderCtx ?? { ...senderContext };
+                                        const updated = { ...base, [field]: e.target.value || "unknown" } as typeof senderContext;
+                                        if (updated) {
+                                          const fs = [updated.what_they_do, updated.who_they_serve, updated.key_activity, updated.high_risk_area, updated.how_they_make_money, updated.what_breaks_if_done_badly];
+                                          const resolved = fs.filter(v => v && v !== "unknown").length;
+                                          const evBonus = (updated.evidence && updated.evidence !== "unknown") ? 20 : 0;
+                                          const actBonus = (updated.key_activity && updated.key_activity !== "unknown") ? 5 : 0;
+                                          updated.confidence = Math.min(resolved * 12 + evBonus + actBonus, 100);
+                                          updated.is_valid = (updated.confidence ?? 0) >= 60;
+                                          updated.quality_score = Math.round((updated.confidence ?? 0)) / 100;
+                                        }
+                                        setEditedSenderCtx(updated);
+                                      }}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <>
+                                {sc.what_they_do !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Does:</span> {sc.what_they_do.slice(0, 90)}</p>}
+                                {sc.who_they_serve !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Customers:</span> {sc.who_they_serve.slice(0, 80)}</p>}
+                                {sc.how_they_make_money !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Revenue:</span> {sc.how_they_make_money.slice(0, 80)}</p>}
+                                {sc.evidence && sc.evidence !== "unknown" && <p className="text-[11px] text-foreground/80 italic border-l-2 border-emerald-400 pl-2 mt-1"><span className="font-semibold not-italic">Evidence:</span> "{sc.evidence.slice(0, 100)}"</p>}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {scrapeStatus === "error" && (
+                        <div className="text-[11px] rounded-md px-3 py-2 border border-red-500/30 bg-red-500/5 text-red-600">
+                          Failed to scrape. Check the URL and try again.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                         <Input
+                           placeholder="Lead website (optional)"
+                           value={leadWebsiteUrl}
+                           onChange={(e) => { setLeadWebsiteUrl(e.target.value); setLeadScrapeStatus("idle"); }}
+                           className="h-10"
+                         />
+                         <Button
+                           variant="outline"
+                           size="sm"
+                           className="h-10"
+                           disabled={!leadWebsiteUrl.trim() || isLeadScraping}
+                           onClick={async () => {
+                             setIsLeadScraping(true);
+                             await runScrapeAutoEnrich(
+                               leadWebsiteUrl,
+                               setLeadScrapePhase,
+                               setLeadContext,
+                               setLeadRawText,
+                               setLeadWebsiteContext,
+                               setLeadScrapeStatus,
+                               setEditedLeadCtx,
+                             );
+                             setIsLeadScraping(false);
+                           }}
+                         >
+                           {isLeadScraping ? "Scraping..." : "Scrape"}
+                         </Button>
+                      </div>
+                      {leadScrapePhase && <ScrapePhaseCard phase={leadScrapePhase} />}
+                      {leadContext && (() => {
+                        const lc = editedLeadCtx ?? leadContext;
+                        const conf = lc.confidence ?? Math.round((lc.quality_score ?? 0) * 100);
+                        const isWeak = conf < 60;
+                        return (
+                          <div className={`rounded-md border p-3 space-y-1 ${isWeak ? "border-amber-500/40 bg-amber-500/5" : "border-blue-500/30 bg-blue-500/5"}`}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <p className={`text-[9px] font-bold uppercase tracking-wider ${isWeak ? "text-amber-600" : "text-blue-600"}`}>Lead Company — Extracted</p>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${isWeak ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"}`}>{conf}/100{isWeak ? " ⚠️" : ""}</span>
+                                <button onClick={() => setEditLeadOpen(v => !v)} className={`text-[9px] hover:underline ${isWeak ? "text-amber-700" : "text-blue-700"}`}>{editLeadOpen ? "Done" : "Edit"}</button>
+                              </div>
+                            </div>
+                            {isWeak && !editLeadOpen && (
+                              <p className="text-[10px] text-amber-700 mb-1">⚠️ Context too generic — paste a real sentence from their site into Evidence</p>
+                            )}
+                            {editLeadOpen ? (
+                              <div className="space-y-1.5">
+                                {(["what_they_do", "who_they_serve", "key_activity", "high_risk_area", "how_they_make_money", "what_breaks_if_done_badly", "evidence"] as const).map(field => (
+                                  <div key={field}>
+                                    <p className="text-[9px] text-blue-700 mb-0.5 capitalize">{field === "evidence" ? "Evidence (verbatim from site)" : field.replace(/_/g, " ")}</p>
+                                    <input
+                                      className="w-full text-[11px] bg-background border border-border rounded px-2 py-1"
+                                      value={((editedLeadCtx ?? leadContext) as Record<string, unknown>)[field] === "unknown" ? "" : String(((editedLeadCtx ?? leadContext) as Record<string, unknown>)[field] ?? "")}
+                                      placeholder={field === "evidence" ? "Paste a sentence from their website..." : `Enter ${field.replace(/_/g, " ")}...`}
+                                      onChange={e => {
+                                        const base = editedLeadCtx ?? { ...leadContext };
+                                        const updated = { ...base, [field]: e.target.value || "unknown" } as typeof leadContext;
+                                        if (updated) {
+                                          const fs = [updated.what_they_do, updated.who_they_serve, updated.key_activity, updated.high_risk_area, updated.how_they_make_money, updated.what_breaks_if_done_badly];
+                                          const resolved = fs.filter(v => v && v !== "unknown").length;
+                                          const evBonus = (updated.evidence && updated.evidence !== "unknown") ? 20 : 0;
+                                          const actBonus = (updated.key_activity && updated.key_activity !== "unknown") ? 5 : 0;
+                                          updated.confidence = Math.min(resolved * 12 + evBonus + actBonus, 100);
+                                          updated.is_valid = (updated.confidence ?? 0) >= 60;
+                                          updated.quality_score = Math.round((updated.confidence ?? 0)) / 100;
+                                        }
+                                        setEditedLeadCtx(updated);
+                                      }}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <>
+                                {lc.what_they_do !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Does:</span> {lc.what_they_do.slice(0, 90)}</p>}
+                                {lc.who_they_serve !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Customers:</span> {lc.who_they_serve.slice(0, 80)}</p>}
+                                {lc.high_risk_area !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Risk area:</span> {lc.high_risk_area.slice(0, 80)}</p>}
+                                {lc.what_breaks_if_done_badly !== "unknown" && <p className="text-[11px] text-foreground/80"><span className="font-semibold text-foreground">Breaks if:</span> {lc.what_breaks_if_done_badly.slice(0, 80)}</p>}
+                                {lc.evidence && lc.evidence !== "unknown" && <p className="text-[11px] text-foreground/80 italic border-l-2 border-blue-400 pl-2 mt-1"><span className="font-semibold not-italic">Evidence:</span> "{lc.evidence.slice(0, 110)}"</p>}
+                              </>
+                            )}
+                            {suggestedAngle && !editLeadOpen && (
+                              <p className="text-[9px] mt-1.5 pt-1.5 border-t border-blue-500/20 text-blue-700 font-bold">
+                                ⚡ Suggested angle: {VARIANT_TEMPLATES.find(t => t.angle === suggestedAngle)?.approach}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {leadScrapeStatus === "error" && (
+                        <div className="text-[11px] rounded-md px-3 py-2 border border-red-500/30 bg-red-500/5 text-red-600">
+                          Failed to scrape. Check the URL and try again.
+                        </div>
+                      )}
+
+                      {/* Deep Enrich button — always visible once a URL is entered */}
+                      {(leadWebsiteUrl.trim() || websiteUrl.trim()) && (
+                        <div className="pt-1 space-y-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full h-8 text-xs gap-1.5 border-violet-500/30 hover:border-violet-500/60 text-violet-700 hover:bg-violet-500/5 disabled:opacity-50"
+                            disabled={isEnriching || !session}
+                            onClick={handleEnrich}
+                          >
+                            {isEnriching
+                              ? <><RefreshCw className="w-3 h-3 animate-spin" /> Enriching...</>
+                              : <><Zap className="w-3 h-3" /> Deep Enrich (LinkedIn + Tech Stack)</>}
+                          </Button>
+                          {!session && (
+                            <p className="text-[10px] text-muted-foreground text-center">
+                              <Link to="/sign-in" className="underline hover:text-foreground">Sign in</Link> to unlock deep enrichment
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Enrichment signal cards */}
+                      {enrichmentResult && enrichmentResult.top_signals.length > 0 && (
+                        <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-violet-700">Enrichment Signals</span>
+                            <span className="text-[9px] font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">
+                              {enrichmentResult.enrichment_score}/100 depth
+                            </span>
+                          </div>
+                          {enrichmentResult.top_signals.map((sig, i) => (
+                            <div key={i} className="flex items-start gap-2">
+                              <span className="text-[10px] font-bold text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded shrink-0">
+                                +{sig.score}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-[10px] font-semibold text-foreground leading-tight">{sig.label}</p>
+                                <p className="text-[9px] text-muted-foreground leading-tight line-clamp-2">{sig.context_snippet}</p>
+                              </div>
+                            </div>
+                          ))}
+                          <p className="text-[9px] text-violet-600 pt-1 border-t border-violet-500/20">
+                            {enrichmentResult.sources_used.join(" + ")} — {enrichmentResult.top_signals.length} signal{enrichmentResult.top_signals.length > 1 ? "s" : ""} injected into prompt
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <Textarea
+                      placeholder="Your offer or product summary (optional)"
+                      value={yourOffer}
+                      onChange={(e) => setYourOffer(e.target.value)}
+                      className="min-h-[90px] text-sm"
+                    />
+                 </div>
                  
                  <div className="pt-4 border-t border-border">
                     <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 block">Signal Optimization</Label>
@@ -875,8 +1529,99 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                            {signal === s && <CheckCircle2 className="w-3 h-3" />}
                          </div>
                        ))}
-                    </div>
+                     </div>
                  </div>
+
+                 {/* CO-STAR + Frameworks */}
+                 <div className="pt-4 border-t border-border space-y-3">
+                    <div
+                      onClick={() => setUseCostar((p) => !p)}
+                      className={cn(
+                        "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all select-none",
+                        useCostar
+                          ? "border-primary/60 bg-primary/5 ring-1 ring-primary/20"
+                          : "border-border bg-muted/20 hover:border-primary/30"
+                      )}
+                    >
+                      <div className={cn(
+                        "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
+                        useCostar ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                      )}>
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-foreground">CO-STAR Mode</p>
+                        <p className="text-[10px] text-muted-foreground">Structured outputs with constraints</p>
+                      </div>
+                      <div className={cn("w-8 h-4 rounded-full border transition-all", useCostar ? "bg-primary border-primary" : "bg-muted border-border")}>
+                        <div className={cn("w-3 h-3 rounded-full bg-white m-0.5 transition-all", useCostar ? "translate-x-4" : "translate-x-0")} />
+                      </div>
+                    </div>
+
+                    {!useCostar && (
+                      <div className="space-y-2">
+                        <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Framework</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {FRAMEWORK_OPTIONS.map((fw) => (
+                            <button
+                              key={fw}
+                              onClick={() => setFramework(fw)}
+                              className={cn(
+                                "px-3 py-1.5 rounded-md text-xs font-semibold border transition-all",
+                                framework === fw
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-card text-muted-foreground border-border hover:border-primary/40 hover:text-foreground"
+                              )}
+                            >
+                              {fw}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                 </div>
+
+                 {/* Context Quality Score Panel */}
+                 {contextScore && (
+                   <div className={`rounded-lg border p-3 space-y-1.5 ${
+                     contextScore.grade === "strong" ? "border-emerald-500/30 bg-emerald-500/5" :
+                     contextScore.grade === "ok" ? "border-blue-500/20 bg-blue-500/5" :
+                     contextScore.grade === "weak" ? "border-amber-500/30 bg-amber-500/5" :
+                     "border-red-500/30 bg-red-500/5"
+                   }`}>
+                     <div className="flex items-center justify-between">
+                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                         <TrendingUp className="w-3 h-3" /> Context Quality
+                       </span>
+                       <div className="flex items-center gap-2">
+                         <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${scoreBadgeClass(contextScore.total)}`}>
+                           {contextScore.total}/100
+                         </span>
+                         {session && (
+                           <Button
+                             size="sm"
+                             variant="outline"
+                             className="h-6 text-[10px] px-2 gap-1"
+                             disabled={isImprovingCtx}
+                             onClick={handleImproveContext}
+                           >
+                             {isImprovingCtx
+                               ? <><RefreshCw className="w-2.5 h-2.5 animate-spin" /> Improving...</>
+                               : <><Zap className="w-2.5 h-2.5" /> Improve ⚡</>}
+                           </Button>
+                         )}
+                       </div>
+                     </div>
+                     {contextScore.issues.slice(0, 2).map((issue, i) => (
+                       <p key={i} className="text-[10px] text-amber-700 flex items-start gap-1">
+                         <AlertTriangle className="w-2.5 h-2.5 mt-0.5 shrink-0" />{issue}
+                       </p>
+                     ))}
+                     {improvedCtxMessage && (
+                       <p className="text-[10px] text-emerald-600 font-medium">✓ {improvedCtxMessage}</p>
+                     )}
+                   </div>
+                 )}
 
                  <Button 
                    size="lg" 
@@ -890,7 +1635,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                      </>
                    ) : (
                      <>
-                       <Wand2 className="w-4 h-4 mr-2" /> Generate {selectedApproaches.length} Variations
+                       <Wand2 className="w-4 h-4 mr-2" /> Generate {selectedApproaches.length} {selectedApproaches.length === 1 ? "Angle" : "Angles"}
                      </>
                    )}
                  </Button>
@@ -913,23 +1658,24 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                        <SlidersHorizontal className="w-4 h-4" />
                     </div>
                     <div>
-                       <h3 className="text-sm font-bold">Strategy Deck</h3>
-                       <p className="text-[10px] text-muted-foreground">Select approaches to generate in parallel.</p>
+                       <h3 className="text-sm font-bold">Angle Engine</h3>
+                       <p className="text-[10px] text-muted-foreground">Each angle changes output logic — not just tone.</p>
                     </div>
                  </div>
 
                  <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => handleBulkSelect("Clear")}>Reset</Button>
                     <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => handleBulkSelect("Recommended")}>Recommended</Button>
-                    <Button variant="outline" size="sm" className="h-7 text-xs bg-primary/5 border-primary/20 text-primary hover:bg-primary/10" onClick={() => handleBulkSelect("ALL")}>Select All (10)</Button>
+                    <Button variant="outline" size="sm" className="h-7 text-xs bg-primary/5 border-primary/20 text-primary hover:bg-primary/10" onClick={() => handleBulkSelect("ALL")}>Select All (6)</Button>
                  </div>
               </div>
 
               <div className="p-6 bg-gradient-to-br from-background to-muted/20">
-                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                     {VARIANT_TEMPLATES.map((tmpl, idx) => {
                        const isSelected = selectedApproaches.includes(idx);
                        const isLocked = !isPro && idx > 2;
+                       const isSuggested = !isSelected && !isLocked && suggestedAngle !== null && tmpl.angle === suggestedAngle;
 
                        return (
                          <motion.button
@@ -938,14 +1684,16 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                            whileTap={{ scale: 0.98 }}
                            onClick={() => toggleApproach(idx)}
                            className={cn(
-                             "relative h-24 rounded-lg border flex flex-col items-center justify-center text-center p-2 transition-all duration-300",
+                             "relative h-28 rounded-lg border flex flex-col items-center justify-center text-center p-3 transition-all duration-300",
                              isSelected 
                                ? "bg-primary text-primary-foreground border-primary ring-2 ring-primary/20 shadow-lg shadow-primary/10" 
-                               : "bg-card text-muted-foreground border-border hover:border-primary/50 hover:text-foreground",
+                               : isSuggested
+                                 ? "bg-amber-500/5 border-amber-500/50 text-foreground ring-1 ring-amber-500/30"
+                                 : "bg-card text-muted-foreground border-border hover:border-primary/50 hover:text-foreground",
                              isLocked && "opacity-60 cursor-not-allowed bg-muted/50"
                            )}
                          >
-                            <span className="text-xs font-bold mb-1">{tmpl.approach}</span>
+                            <span className="text-xs font-bold mb-1.5 leading-tight">{tmpl.approach}</span>
                             <span className={cn("text-[9px] leading-tight", isSelected ? "text-primary-foreground/80" : "text-muted-foreground")}>
                               {tmpl.desc}
                             </span>
@@ -957,6 +1705,11 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                                >
                                   <CheckCircle2 className="w-3 h-3" />
                                </motion.div>
+                            )}
+                            {isSuggested && (
+                               <div className="absolute top-1 left-1">
+                                  <span className="text-[8px] font-bold bg-amber-400/30 text-amber-700 px-1 py-0.5 rounded leading-none">AI ✦</span>
+                               </div>
                             )}
                             {isLocked && (
                                <div className="absolute top-1.5 right-1.5 text-muted-foreground">
@@ -1000,6 +1753,9 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                              <div className="flex items-center gap-2">
                                 <span className="text-xs font-bold uppercase tracking-wider text-primary bg-primary/10 px-2 py-0.5 rounded">{result.approach}</span>
                                 <span className="text-[10px] text-muted-foreground border border-border px-1.5 py-0.5 rounded">{result.type}</span>
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${outputScoreBadgeClass(result.outputScore)}`}>
+                                  {outputScoreEmoji(result.outputScore)} {result.outputScore}/100
+                                </span>
                              </div>
                              <div className="hidden sm:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleSave(result.content, result.type)}>
@@ -1012,32 +1768,14 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                           </div>
                           
                           <div className="p-5 flex-1 relative overflow-hidden">
-                             <pre className={cn(
-                               "text-sm text-foreground whitespace-pre-wrap break-words leading-relaxed font-sans transition-all duration-500",
-                               !session && "blur-md select-none opacity-50"
-                             )}>
+                             <pre className="text-sm text-foreground whitespace-pre-wrap break-words leading-relaxed font-sans transition-all duration-500">
                                 {result.content}
                              </pre>
-                             
-                             {!session && (
-                               <div className="absolute inset-0 flex flex-col items-center justify-center z-10 p-4 text-center bg-background/10 backdrop-blur-[2px]">
-                                  <div className="bg-card/90 border border-border p-6 rounded-xl shadow-xl flex flex-col items-center">
-                                    <Lock className="w-8 h-8 text-primary mb-3 bg-primary/10 p-1.5 rounded-full" />
-                                    <h4 className="font-bold text-foreground mb-1 text-base">Login to View</h4>
-                                    <p className="text-xs text-muted-foreground mb-4 max-w-[200px] leading-relaxed">
-                                      Sign in to unlock your personalized prompt and save it to your library.
-                                    </p>
-                                    <Button size="sm" asChild className="font-bold shadow-lg w-full">
-                                       <Link to="/signin">Sign In / Sign Up</Link>
-                                    </Button>
-                                  </div>
-                               </div>
-                             )}
                           </div>
 
                           <div className="px-5 py-3 border-t border-border bg-muted/5 flex items-center justify-between">
-                             <Button variant="ghost" size="sm" className="text-xs h-7 text-muted-foreground hover:text-primary">
-                                <Maximize2 className="w-3 h-3 mr-1.5" /> Expand
+                             <Button variant="ghost" size="sm" className="text-xs h-7 text-muted-foreground hover:text-primary" onClick={() => openPreview(result.content, result.approach)}>
+                                <Play className="w-3 h-3 mr-1.5" /> Preview Output
                              </Button>
                              <Button size="sm" className="text-xs h-7 font-bold gap-1.5" onClick={() => handleSave(result.content, result.type)}>
                                 <Save className="w-3 h-3" /> Save
@@ -1082,6 +1820,23 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
 
         </div>
       </div>
+
+      <PreviewPanel
+        isOpen={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        prompt={previewPrompt}
+        promptApproach={previewApproach}
+        onSendToPipeline={sendToPipeline}
+        onSave={(content) => handleSave(content, previewApproach || "Preview")}
+      />
+      {previewPrompt && (
+        <button
+          onClick={() => setPreviewOpen(true)}
+          className="fixed bottom-24 right-6 z-[90] rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/30 px-4 py-2 text-xs font-bold uppercase tracking-wider hover:opacity-90 transition-opacity"
+        >
+          Reopen Preview
+        </button>
+      )}
     </div>
   );
 }

@@ -39,10 +39,18 @@ export function GlobalFooter() {
             <h3 className="font-bold text-foreground">Product</h3>
             <ul className="space-y-3 text-muted-foreground">
               <li><Link to="/prompts" className="hover:text-foreground transition-colors">Directory</Link></li>
+              <li><Link to="/app" className="hover:text-foreground transition-colors">App Hub</Link></li>
               <li><Link to="/generator" className="hover:text-foreground transition-colors">Prompt Generator</Link></li>
-              <li><Link to="/packs" className="hover:text-foreground transition-colors">Workflow Packs</Link></li>
+              <li><Link to="/pipeline" className="hover:text-foreground transition-colors">Pipeline Builder</Link></li>
+              <li><Link to="/packs" className="hover:text-foreground transition-colors">Pack Builder</Link></li>
+              <li><Link to="/marketplace" className="hover:text-foreground transition-colors">Marketplace</Link></li>
               <li><Link to="/pricing" className="hover:text-foreground transition-colors">Pricing</Link></li>
               <li><Link to="/analytics" className="hover:text-foreground transition-colors">Analytics</Link></li>
+              <li><Link to="/integrations" className="hover:text-foreground transition-colors">Integrations</Link></li>
+              <li><Link to="/api-keys" className="hover:text-foreground transition-colors">API Keys</Link></li>
+              <li><Link to="/white-label" className="hover:text-foreground transition-colors">White Label</Link></li>
+              <li><Link to="/mobile" className="hover:text-foreground transition-colors">Mobile App</Link></li>
+              <li><Link to="/labs/sidebar" className="hover:text-foreground transition-colors">UI Lab</Link></li>
             </ul>
           </div>
 
@@ -51,9 +59,7 @@ export function GlobalFooter() {
             <h3 className="font-bold text-foreground">Company</h3>
             <ul className="space-y-3 text-muted-foreground">
               <li><Link to="/about" className="hover:text-foreground transition-colors">About Us</Link></li>
-              {/* Coming Soon */}
-              {/* <li><Link to="/blog" className="hover:text-foreground transition-colors">Blog</Link></li> */}
-              {/* <li><Link to="/careers" className="hover:text-foreground transition-colors">Careers</Link></li> */}
+              <li><Link to="/blog" className="hover:text-foreground transition-colors">Blog</Link></li>
               <li><Link to="/contact" className="hover:text-foreground transition-colors">Contact</Link></li>
             </ul>
           </div>
