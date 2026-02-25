@@ -4,7 +4,7 @@
 export type SignalType = "Quality" | "Speed" | "Accuracy" | "Detail" | "Creative" | "Conversion";
 export type CategoryType = "Development" | "Marketing" | "Sales" | "Content" | "Design" | "General";
 
-// Angle types — kept for backward compat, non-sales path still uses them
+// Angle types — these change LOGIC not just tone
 export type AngleType =
     | "missed_opportunity"
     | "hidden_risk"
@@ -13,15 +13,8 @@ export type AngleType =
     | "pattern_interrupt"
     | "social_proof";
 
-// New insight types — used by the Sales path
-export type InsightType =
-    | "focus_trap"
-    | "blind_spot"
-    | "scaling_wrong"
-    | "hidden_bottleneck";
-
 // Backward compat alias
-export type VariantType = AngleType | InsightType;
+export type VariantType = AngleType;
 
 export type FrameworkType = "RISEN" | "RTF" | "APE" | "RACE";
 
@@ -304,42 +297,8 @@ export const ANGLE_TEMPLATES = [
     },
 ];
 
-// ─── Insight Types (new Sales engine) ───────────────────────────────────────
-// Replaces the 6-angle system. One insight → one message.
-export const INSIGHT_TYPES = [
-    {
-        approach: "Focus Trap",
-        type: "Insight",
-        desc: "They're over-investing in the wrong metric or feature",
-        insight: "focus_trap" as InsightType,
-        provocation: "The thing they're proud of is actually the problem."
-    },
-    {
-        approach: "Blind Spot",
-        type: "Insight",
-        desc: "An obvious gap they've stopped seeing",
-        insight: "blind_spot" as InsightType,
-        provocation: "Everyone in their space ignores this — and pays for it eventually."
-    },
-    {
-        approach: "Scaling Wrong",
-        type: "Insight",
-        desc: "Growing volume when the real lever is something else",
-        insight: "scaling_wrong" as InsightType,
-        provocation: "More of the same thing won't fix a direction problem."
-    },
-    {
-        approach: "Hidden Bottleneck",
-        type: "Insight",
-        desc: "An invisible constraint killing throughput or conversion",
-        insight: "hidden_bottleneck" as InsightType,
-        provocation: "They're optimizing the last mile but losing at the first."
-    },
-];
-
-// VARIANT_TEMPLATES — primary import for UI pickers.
-// Sales path: uses INSIGHT_TYPES. Non-sales: ANGLE_TEMPLATES is still available.
-export const VARIANT_TEMPLATES = INSIGHT_TYPES;
+// Backward compat alias — GeneratorPage & PackBuilderView import VARIANT_TEMPLATES
+export const VARIANT_TEMPLATES = ANGLE_TEMPLATES;
 
 interface AngleDefinition {
     label: string;
@@ -352,15 +311,24 @@ interface AngleDefinition {
 const ANGLE_DEFINITIONS: Record<AngleType, AngleDefinition> = {
     missed_opportunity: {
         label: "Missed Opportunity",
-        salesInstruction: "Read the CONTEXT 'Evidence' field first. That sentence is what this company says they do. Now identify what segment leader in their space does that they visibly are not. Use the 'Customers' and 'Revenue model' fields to make the gap specific to their segment and motion. Your opening line must reinterpret or reframe the Evidence sentence — not paraphrase it. Do not use generic gaps that could apply to any company. If Evidence is missing → fallback to 'Core activity' + 'Customers'. If both are unknown → output [CONTEXT NEEDED: please edit the context fields].",
-        generalInstruction: "Identify the most important thing missing from the current approach and frame it as an untapped opportunity with measurable upside.",
+        salesInstruction: `Step 1 — Read the CONTEXT 'Evidence' field. That is the verbatim sentence from their website. It tells you exactly what they claim to do and for whom.
+Step 2 — From that sentence, extract: (a) the core outcome they promise, and (b) the customer segment they serve.
+Step 3 — Identify ONE specific tactic, channel, or capability that high-performers in this segment use to drive that same outcome — but this company is likely NOT doing it, based on what is absent from the Evidence.
+Step 4 — Write the email:
+  LINE 1: State the gap as a sharp, specific observation about their segment — NOT a question, NOT a compliment. Use a word or phrase directly from the Evidence. Format: "[Thing competitors in their segment are doing] — [implication that this company is behind]."
+  LINE 2: One sentence on what this gap is likely costing them right now. Be concrete: pipeline, positioning, deal speed, or retention — pick one. Never say "efficiency" or "ROI".
+  LINE 3: One sentence on what closing this gap would unlock. Must be traceable to their stated outcome (from Evidence).
+  LINE 4: CTA — one yes/no question: "Is [the gap] on your radar for [this quarter / this cycle]?" Nothing else.
+If Evidence is missing → use 'Core activity' + 'Customers' to infer the gap.
+If both are missing → output exactly: [CONTEXT NEEDED — please complete the context fields before generating].`,
+        generalInstruction: "Identify the single most important tactic or capability missing from the current approach and frame it as a specific, recoverable gap with a named cost and a clear unlock.",
         structure: [
-            "Name the specific gap or missed tactic (not generic — tie to their industry or role)",
-            "Show what it's costing them right now (time, revenue, pipeline, positioning)",
-            "Position your solution as the direct unlock for this gap",
-            "One soft CTA — ask if this is on their radar, not for a meeting"
+            "LINE 1: Name the gap as a sharp observation — one sentence, no question, uses a word from their context",
+            "LINE 2: One sentence — what this gap is costing them right now (pick one: pipeline, positioning, deal speed, or retention)",
+            "LINE 3: One sentence — what closing this gap unlocks, tied to their stated outcome",
+            "LINE 4: CTA — a single yes/no question asking if this is on their radar"
         ],
-        constraint: "If the gap could apply to any company in any industry → rewrite with more specificity."
+        constraint: "Every line must be traceable to the Evidence or Context fields. If any line could apply to any company in any industry → rewrite that line with explicit specificity before outputting."
     },
     hidden_risk: {
         label: "Hidden Risk",
@@ -509,97 +477,6 @@ export function inferBestAngle(ctx: ContextShape): AngleType {
   return "pattern_interrupt";
 }
 
-/**
- * interpretContext — converts raw ContextShape fields into a short interpreted
- * paragraph the LLM can reason from. This is the "thinking" step:
- * raw data → what it MEANS → what the real problem likely is.
- */
-export function interpretContext(sc: ContextShape & { sender_what?: string; your_offer?: string }): string {
-    const ok = (v?: string) => !!(v && v !== "unknown" && v.trim().length > 3);
-    const lines: string[] = [];
-
-    if (ok(sc.what_they_do)) {
-        lines.push(`They ${sc.what_they_do.replace(/^(we|they)\s+/i, "")}.`);
-    }
-    if (ok(sc.who_they_serve ?? sc.target_customer)) {
-        lines.push(`Their buyers are ${sc.who_they_serve ?? sc.target_customer}.`);
-    }
-    if (ok(sc.how_they_make_money ?? sc.core_motion)) {
-        lines.push(`Revenue model: ${sc.how_they_make_money ?? sc.core_motion}.`);
-    }
-    if (ok(sc.key_activity)) {
-        lines.push(`Core motion: ${sc.key_activity}.`);
-    }
-    if (ok(sc.high_risk_area)) {
-        lines.push(`Likely risk: ${sc.high_risk_area}.`);
-    }
-    if (ok(sc.what_breaks_if_done_badly ?? sc.likely_problem)) {
-        lines.push(`What breaks badly: ${sc.what_breaks_if_done_badly ?? sc.likely_problem}.`);
-    }
-    if (ok(sc.evidence)) {
-        lines.push(`Direct quote from their site: "${sc.evidence}"`);
-    }
-    if (ok(sc.your_offer)) {
-        lines.push(`What you're selling: ${sc.your_offer}.`);
-    }
-    if (ok(sc.sender_what)) {
-        lines.push(`Your company: ${sc.sender_what}.`);
-    }
-    return lines.join(" ");
-}
-
-export function generateInsightPrompt(opts: {
-    insightType: InsightType;
-    interpretedContext: string;
-    role?: string;
-    industry?: string;
-    useCase?: string;
-}): string {
-    const insightInstructions: Record<InsightType, string> = {
-        focus_trap:
-            "Identify the one metric, feature, or effort they're over-invested in. " +
-            "Make the case that it's not actually moving the needle — and something else is.",
-        blind_spot:
-            "Identify the one obvious thing they're not doing (or not measuring). " +
-            "Not because they don't care — because they're too close to see it.",
-        scaling_wrong:
-            "Identify where they're adding volume (headcount, budget, outreach, traffic) " +
-            "when the real constraint is upstream. More of the same won't fix it.",
-        hidden_bottleneck:
-            "Identify the invisible step in their process that's killing throughput or conversion. " +
-            "Everyone downstream optimizes. Nobody fixes this.",
-    };
-
-    return [
-        `You are a top SDR writing a ${opts.useCase || "cold outbound message"}.`,
-        "",
-        "Your job is NOT to personalize.",
-        "Your job is to find ONE sharp insight and build ONE message around it.",
-        "",
-        "Company data:",
-        opts.interpretedContext || "[no context provided]",
-        "",
-        `Insight type: ${insightInstructions[opts.insightType]}`,
-        "",
-        "Rules:",
-        "- Max 60 words",
-        "- No structure. No numbered lists. No bullet points.",
-        "- No buzzwords: no 'drive', 'leverage', 'streamline', 'enable', 'synergy', 'cutting-edge'",
-        "- No greeting formula. No 'Hi [name], I noticed...'",
-        "- No pitch. State the insight. Let it land.",
-        "- Be slightly provocative — say one thing they might push back on",
-        "- End with one question that's hard to say 'not relevant' to",
-        "- Must feel like a real thought from a smart peer, not a marketer",
-        "",
-        "Self-check:",
-        "- Could this be sent to any company? → rewrite",
-        "- Does line 1 contain a real observation? → if not, rewrite",
-        "- Is the question at the end easy to ignore? → rewrite",
-        "",
-        "Output: just the message. No preamble. No meta-commentary."
-    ].join("\n");
-}
-
 export function generateCOSTARPrompt(opts: {
     useCase: string;
     outcome: string;
@@ -647,43 +524,46 @@ export function generateCOSTARPrompt(opts: {
     }
 
     if (isSales) {
-        // ── Insight-based Sales path ───────────────────────────────────────────────
-        // Pick insight type from variant (maps old angle keys too for backward compat)
-        const insightMap: Record<string, InsightType> = {
-            focus_trap: "focus_trap",
-            blind_spot: "blind_spot",
-            scaling_wrong: "scaling_wrong",
-            hidden_bottleneck: "hidden_bottleneck",
-            // legacy angle → nearest insight
-            missed_opportunity: "blind_spot",
-            hidden_risk: "hidden_bottleneck",
-            timing_trigger: "focus_trap",
-            inefficiency: "hidden_bottleneck",
-            pattern_interrupt: "blind_spot",
-            social_proof: "scaling_wrong",
-        };
-        const insightKey: InsightType = insightMap[angleKey] ?? "blind_spot";
-
-        // Build the interpreted context: structured first, then plain-text fallback
-        let interpretedCtx = "";
-        if (opts.structuredContext) {
-            interpretedCtx = interpretContext(opts.structuredContext);
-        } else if (opts.context) {
-            interpretedCtx = opts.context
-                .replace(/Title:|URL Source|Source:|Markdown Content:/gi, "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 400);
-        }
-        if (!interpretedCtx) interpretedCtx = `${role} at a ${industry} company`;
-
-        return generateInsightPrompt({
-            insightType: insightKey,
-            interpretedContext: interpretedCtx,
-            role,
-            industry,
-            useCase,
-        });
+        // New master prompt — forces specificity, angle, and hard constraints
+        return [
+            `You are an elite B2B outbound strategist.`,
+            `Role: ${role}`,
+            `Industry: ${industry}`,
+            "",
+            "TASK:",
+            `Write a ${useCase} that gets a reply, not a meeting.`,
+            "",
+            "ANGLE:",
+            `${def.label} — ${def.salesInstruction}`,
+            "",
+            "STRUCTURE:",
+            ...def.structure.map((s, i) => `${i + 1}. ${s}`),
+            "",
+            "RULES:",
+            "- Max 75 words total",
+            "- No buzzwords (no: \"streamline\", \"leverage\", \"efficiency\", \"ROI\", \"innovative\", \"cutting-edge\", \"game-changer\")",
+            "- No filler openers ("I came across your company", "Hope this finds you well", "I wanted to reach out")",
+            "- Every sentence must contain a specific, verifiable claim — no vague generalities",
+            "- Use one word or phrase directly from the CONTEXT to prove you read it",
+            "- CTA must be a yes/no question — never a calendar link or demo request",
+            "- Tone: peer writing to peer — no marketing voice, no flattery, no pressure",
+            "- The gap named in line 1 must be specific to their segment — not reusable across industries",
+            "",
+            "SELF-CHECK (run before outputting):",
+            `- ${def.constraint}`,
+            "- Could this email be sent to 100 random companies unchanged? If yes → rewrite line 1",
+            "- Does line 1 contain a sharp, specific insight? If no → rewrite line 1",
+            "- Does the CTA ask for time or a meeting? If yes → replace with a yes/no question",
+            "- Is any buzzword from the RULES list present? If yes → remove it",
+            "- Is Evidence present in CONTEXT and NOT referenced in the email? If yes → rewrite",
+            "- Rate your email 0-100 on specificity and relevance. If below 75 → rewrite and re-rate",
+            "",
+            "GOAL:",
+            `The reader should think: "this person understands my business specifically — not just my industry."`,
+            `The email scores 80+ out of 100 on: specificity, relevance to their context, insight quality, and CTA clarity.`,
+            `Output ONLY the email body. No subject line. No preamble. No meta-commentary.`,
+            contextBlock
+        ].filter(Boolean).join("\n");
     }
 
     // Non-sales: angle-driven structured prompt
