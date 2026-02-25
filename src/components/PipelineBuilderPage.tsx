@@ -22,8 +22,7 @@ import {
   type AngleType,
 } from "./prompt-engine";
 import { VARIANT_TYPE_MAP } from "./generator/generator-constants";
-import { scrapeWebsiteContext, type StructuredContext } from "../utils/website-scraper";
-import { scoreOutput } from "../utils/output-scorer";
+import { scrapeWebsiteContext } from "../utils/website-scraper";
 import { projectId } from "../utils/supabase/info";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -93,56 +92,6 @@ function buildRowContext(row: CSVRow, mapping: ColumnMapping): string {
   return parts.join(" | ");
 }
 
-/**
- * Maps a CSV row + column mapping to a StructuredContext so the prompt engine
- * and output scorer can use it for personalization.
- * Pain point → evidence (most valuable signal).
- * Custom context → what_they_do fallback.
- */
-function rowToStructuredContext(row: CSVRow, mapping: ColumnMapping, senderCtx?: string, yourOffer?: string): StructuredContext {
-  const company   = (mapping.company   && row[mapping.company])   || "";
-  const role      = (mapping.role      && row[mapping.role])      || "";
-  const industry  = (mapping.industry  && row[mapping.industry])  || "";
-  const painPoint = (mapping.pain_point && row[mapping.pain_point]) || "";
-  const custom    = (mapping.custom_context && row[mapping.custom_context]) || "";
-
-  // Build what_they_do from company + industry context
-  const what_they_do = [
-    company ? `${company}` : "",
-    industry ? `(${industry})` : "",
-    custom || "",
-  ].filter(Boolean).join(" ").trim() || "unknown";
-
-  // evidence = pain point is the richest per-row signal
-  const evidence = painPoint.length > 10 ? painPoint.slice(0, 220) : "unknown";
-
-  // who_they_serve = the role/seniority of the contact we're writing to
-  const who_they_serve = role || "unknown";
-
-  // key_activity: extract a verb phrase from pain point if possible
-  const kvMatch = painPoint.match(/\b(?:automate|manage|generate|source|recruit|track|scale|grow|convert|close|reduce) [^.,!?]{5,80}/i);
-  const key_activity = kvMatch ? kvMatch[0].slice(0, 100) : "unknown";
-
-  const resolvedCount = [what_they_do, who_they_serve, key_activity, evidence]
-    .filter(v => v !== "unknown").length;
-  const confidence = Math.min(40 + resolvedCount * 15, 90); // 40–85 range
-
-  return {
-    what_they_do,
-    who_they_serve,
-    key_activity,
-    high_risk_area: "unknown",
-    how_they_make_money: "unknown",
-    what_breaks_if_done_badly: "unknown",
-    evidence,
-    confidence,
-    is_valid: confidence >= 45,
-    quality_score: confidence / 100,
-    // Attach offer data for richer context block
-    ...(yourOffer ? { your_offer: yourOffer.slice(0, 150) } : {}),
-  } as StructuredContext & { your_offer?: string };
-}
-
 // ─── LLM CALL ────────────────────────────────────────────────────────────────
 
 async function callLLM(prompt: string, accessToken: string): Promise<{ output: string; score: number }> {
@@ -188,8 +137,8 @@ function ProgressBar({ value, max, label }: { value: number; max: number; label?
 
 function ScoreBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
-  const cls = pct >= 90 ? "bg-emerald-100 text-emerald-700"
-    : pct >= 75 ? "bg-blue-100 text-blue-700"
+  const cls = pct >= 85 ? "bg-emerald-100 text-emerald-700"
+    : pct >= 70 ? "bg-blue-100 text-blue-700"
     : pct >= 50 ? "bg-amber-100 text-amber-700"
     : "bg-red-100 text-red-700";
   return (
@@ -371,22 +320,17 @@ export function PipelineBuilderPage() {
         const rowCompany = (mapping.company && row[mapping.company]) || "";
         const rowName = (mapping.name && row[mapping.name]) || "";
 
-        // Build StructuredContext from CSV row for proper personalization scoring
-        const rowStructuredCtx = rowToStructuredContext(row, mapping, senderCtx, yourOffer);
-
         const prompt = generateCOSTARPrompt({
           useCase: `${useCase}${rowCompany ? ` to ${rowCompany}` : ""}${rowName ? ` (${rowName})` : ""}`,
           outcome,
           role: rowRole,
           industry: rowIndustry,
           signal,
-          structuredContext: rowStructuredCtx,
+          context: contextParts || undefined,
           variant: variantType,
         });
 
-        const { output } = await callLLM(prompt, session.access_token);
-        // Score output client-side using full StructuredContext for accurate personalization
-        const score = scoreOutput(output || prompt, rowStructuredCtx).total / 100;
+        const { output, score } = await callLLM(prompt, session.access_token);
 
         setRows(prev => prev.map(r =>
           r.index === idx ? { ...r, prompt, output, outputScore: score, status: "done" } : r
