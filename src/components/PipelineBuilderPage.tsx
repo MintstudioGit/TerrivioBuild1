@@ -590,43 +590,6 @@ export function PipelineBuilderPage() {
     </div>
   );
 }
-        <div className="max-w-6xl mx-auto px-4">
-          <div className="flex items-center gap-1 overflow-x-auto py-3 scrollbar-none">
-            {STEPS.map((step, i) => (
-              <button
-                key={step.id}
-                onClick={() => setCurrentStep(step.id)}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap transition-all min-h-[44px]",
-                  currentStep === step.id
-                    ? "bg-primary text-primary-foreground"
-                    : i < currentStepIndex
-                      ? "text-foreground bg-muted/60 hover:bg-muted"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                )}
-              >
-                <span
-                  className={cn(
-                    "flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0",
-                    currentStep === step.id
-                      ? "bg-primary-foreground/20 text-primary-foreground"
-                      : i < currentStepIndex
-                        ? "bg-primary/20 text-primary"
-                        : "bg-muted-foreground/20 text-muted-foreground"
-                  )}
-                >
-                  {i < currentStepIndex ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : (
-                    step.number
-                  )}
-                </span>
-                <span className="hidden sm:inline">{step.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
 
       {/* MAIN CONTENT */}
       <div className="flex-1">
