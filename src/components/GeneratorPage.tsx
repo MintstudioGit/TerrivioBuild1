@@ -36,7 +36,7 @@ import { OfferExtractorComponent, type ExtractedOffer } from "./OfferExtractorCo
 import { PreviewPanel } from "./PreviewPanel";
 import { scrapeWebsiteContext, type StructuredContext } from "../utils/website-scraper";
 import { scoreContext, scoreColour, scoreBadgeClass } from "../utils/context-scorer";
-import { scoreOutput, outputScoreEmoji, outputScoreBadgeClass } from "../utils/output-scorer";
+import { scoreOutput, outputScoreEmoji, outputScoreBadgeClass, type OutputScoreResult } from "../utils/output-scorer";
 import { improveContext } from "../utils/context-improver";
 import { runEnrichmentWaterfall, extractDomain, type WaterfallOptions } from "../utils/enrichment-waterfall";
 import type { EnrichmentResult } from "../utils/enrichment-types";
@@ -878,7 +878,18 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
     type: string,
     content: string,
     outputScore: number,
+    fullScore: OutputScoreResult,
   }[] | null>(null);
+
+  // Batch pipeline mode
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchInput, setBatchInput] = useState("");
+  const [batchResults, setBatchResults] = useState<{
+    rowLabel: string;
+    content: string;
+    fullScore: OutputScoreResult;
+  }[] | null>(null);
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
 
   const [showLock, setShowLock] = useState(false);
   const [showWorkflowUpsell, setShowWorkflowUpsell] = useState(false);
@@ -1010,12 +1021,14 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
           approach: tmpl.approach,
           type: tmpl.type,
           content,
+          fullScore: scoreOutput(content, structuredCtxForPrompt as StructuredContext | undefined),
           outputScore: scoreOutput(content, structuredCtxForPrompt as StructuredContext | undefined).total,
         };
       });
 
       setGeneratedResults(results);
       setIsGenerating(false);
+      setBatchResults(null); // clear batch when single mode runs
       
       // Workflow Upsell
       setTimeout(() => setShowWorkflowUpsell(true), 1000);
@@ -1024,6 +1037,69 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  // ── Batch Pipeline in Generator ──────────────────────────────────────────────
+  // Parses textarea lines: "Company | Role | Context" or just "Company | Context"
+  // Generates one prompt per row using the same angle/context config.
+  const handleBatchGenerate = () => {
+    if (!useCase) { toast.error("Set a Use Case first"); return; }
+    const lines = batchInput.split("\n").map(l => l.trim()).filter(Boolean);
+    if (!lines.length) { toast.error("Paste at least one prospect row"); return; }
+    setIsBatchRunning(true);
+    setBatchResults(null);
+
+    setTimeout(() => {
+      const activeLead   = editedLeadCtx   ?? leadContext   ?? null;
+      const activeSender = editedSenderCtx ?? senderContext ?? null;
+      const baseCtx      = activeLead ?? activeSender ?? null;
+      const firstAngle   = (VARIANT_TYPE_MAP[VARIANT_TEMPLATES[selectedApproaches[0]]?.approach] as AngleType) || "missed_opportunity";
+
+      const results = lines.map(line => {
+        const parts = line.split("|").map(p => p.trim());
+        const company  = parts[0] || "";
+        const roleOrCtx = parts[1] || "";
+        const ctxStr    = parts[2] || roleOrCtx;
+        const painPoint = parts[3] || "";
+
+        // Build StructuredContext from the batch row — evidence = the context field
+        const rowCtx: StructuredContext & { your_offer?: string } = {
+          what_they_do: company
+            ? `${company}${parts[1] && parts.length > 2 ? ` — ${roleOrCtx}` : ""}`
+            : (baseCtx?.what_they_do ?? "unknown"),
+          who_they_serve: (parts.length > 2 ? roleOrCtx : "unknown") || baseCtx?.who_they_serve || "unknown",
+          key_activity: (baseCtx?.key_activity) ?? "unknown",
+          high_risk_area: (baseCtx?.high_risk_area) ?? "unknown",
+          how_they_make_money: (baseCtx?.how_they_make_money) ?? "unknown",
+          what_breaks_if_done_badly: (baseCtx?.what_breaks_if_done_badly) ?? "unknown",
+          evidence: (painPoint || ctxStr).slice(0, 220) || baseCtx?.evidence || "unknown",
+          confidence: company ? 70 : 45,
+          is_valid: true,
+          your_offer: yourOffer ? yourOffer.slice(0, 150) : undefined,
+        };
+
+        const prompt = generateCOSTARPrompt({
+          useCase: useCase + (company ? ` to ${company}` : ""),
+          outcome,
+          role: role || (parts.length > 2 ? roleOrCtx : "VP"),
+          industry,
+          signal,
+          structuredContext: rowCtx,
+          variant: firstAngle,
+        });
+
+        const fullScore = scoreOutput(prompt, rowCtx as StructuredContext);
+        return {
+          rowLabel: company || `Row ${lines.indexOf(line) + 1}`,
+          content: prompt,
+          fullScore,
+        };
+      });
+
+      setBatchResults(results);
+      setIsBatchRunning(false);
+      setGeneratedResults(null);
+    }, 800);
   };
 
   const openPreview = (prompt: string, approach?: string) => {
@@ -1622,22 +1698,71 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                    </div>
                  )}
 
-                 <Button 
-                   size="lg" 
-                   className="w-full font-bold h-12 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-all hover:scale-[1.02]"
-                   onClick={handleGenerate}
-                   disabled={isGenerating || !useCase}
-                 >
-                   {isGenerating ? (
-                     <>
-                       <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Generating...
-                     </>
-                   ) : (
-                     <>
-                       <Wand2 className="w-4 h-4 mr-2" /> Generate {selectedApproaches.length} {selectedApproaches.length === 1 ? "Angle" : "Angles"}
-                     </>
-                   )}
-                 </Button>
+                 {/* Single / Batch mode toggle */}
+                 <div className="flex items-center bg-muted/50 rounded-lg p-0.5 border border-border">
+                   <button
+                     onClick={() => setBatchMode(false)}
+                     className={cn(
+                       "flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1.5",
+                       !batchMode ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                     )}
+                   >
+                     <Wand2 className="w-3 h-3" /> Single
+                   </button>
+                   <button
+                     onClick={() => setBatchMode(true)}
+                     className={cn(
+                       "flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1.5",
+                       batchMode ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                     )}
+                   >
+                     <Layers className="w-3 h-3" /> Batch Pipeline
+                   </button>
+                 </div>
+
+                 {batchMode ? (
+                   <div className="space-y-3">
+                     <div className="space-y-1">
+                       <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Paste Prospects</Label>
+                       <p className="text-[10px] text-muted-foreground">One per line — format: <code className="bg-muted px-1 rounded text-[10px]">Company | Role | Pain point / context</code></p>
+                     </div>
+                     <Textarea
+                       value={batchInput}
+                       onChange={(e) => setBatchInput(e.target.value)}
+                       placeholder={`Acme Corp | VP Sales | Struggling to personalise outreach at scale\nBeta Inc | CMO | Just raised Series B, building demand gen\nGamma Ltd | Head of Growth | Moving from inbound to outbound`}
+                       className="min-h-[140px] font-mono text-xs resize-none"
+                     />
+                     <Button
+                       size="lg"
+                       className="w-full font-bold h-12 text-base shadow-lg shadow-primary/20"
+                       onClick={handleBatchGenerate}
+                       disabled={isBatchRunning || !useCase || !batchInput.trim()}
+                     >
+                       {isBatchRunning ? (
+                         <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Running Batch...</>
+                       ) : (
+                         <><Zap className="w-4 h-4 mr-2" /> Run Batch Pipeline</>
+                       )}
+                     </Button>
+                   </div>
+                 ) : (
+                   <Button
+                     size="lg"
+                     className="w-full font-bold h-12 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-all hover:scale-[1.02]"
+                     onClick={handleGenerate}
+                     disabled={isGenerating || !useCase}
+                   >
+                     {isGenerating ? (
+                       <>
+                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Generating...
+                       </>
+                     ) : (
+                       <>
+                         <Wand2 className="w-4 h-4 mr-2" /> Generate {selectedApproaches.length} {selectedApproaches.length === 1 ? "Angle" : "Angles"}
+                       </>
+                     )}
+                   </Button>
+                 )}
               </div>
            </div>
         </div>
@@ -1772,6 +1897,56 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                              </pre>
                           </div>
 
+                          {/* ── Score Breakdown ── */}
+                          {(() => {
+                            const s = result.fullScore;
+                            const dims = [
+                              { label: "Specificity",     val: s.specificity,     max: 25, color: "bg-violet-500" },
+                              { label: "Personalization", val: s.personalization,  max: 20, color: "bg-blue-500" },
+                              { label: "Angle",           val: s.angle,           max: 20, color: "bg-emerald-500" },
+                              { label: "Structure",       val: s.structure,       max: 15, color: "bg-teal-500" },
+                              { label: "CTA",             val: s.cta,             max: 10, color: "bg-amber-500" },
+                              { label: "Hook Bonus",      val: s.hook,            max: 10, color: "bg-orange-400" },
+                            ];
+                            return (
+                              <div className="px-5 pt-3 pb-4 border-t border-border bg-muted/5 space-y-1.5">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                                  <BarChart3 className="w-3 h-3" /> Score Breakdown
+                                </p>
+                                {dims.map(d => (
+                                  <div key={d.label} className="flex items-center gap-2">
+                                    <p className="text-[10px] text-muted-foreground w-28 shrink-0">{d.label}</p>
+                                    <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all duration-500 ${d.color}`}
+                                        style={{ width: `${Math.min((d.val / d.max) * 100, 100)}%` }}
+                                      />
+                                    </div>
+                                    <p className={`text-[10px] font-bold tabular-nums w-10 text-right ${d.val === d.max ? "text-emerald-600" : ""}`}>{d.val}/{d.max}</p>
+                                  </div>
+                                ))}
+                                {s.genericPenalty > 0 && (
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-[10px] text-red-500 w-28 shrink-0">Penalty</p>
+                                    <div className="flex-1 h-1.5 bg-red-100 rounded-full overflow-hidden">
+                                      <div className="h-full rounded-full bg-red-400" style={{ width: `${(s.genericPenalty / 20) * 100}%` }} />
+                                    </div>
+                                    <p className="text-[10px] font-bold tabular-nums w-10 text-right text-red-500">-{s.genericPenalty}</p>
+                                  </div>
+                                )}
+                                {s.issues.length > 0 && (
+                                  <div className="mt-2 space-y-0.5">
+                                    {s.issues.map((issue, ii) => (
+                                      <p key={ii} className="text-[9px] text-amber-600 flex items-start gap-1">
+                                        <AlertTriangle className="w-2.5 h-2.5 mt-px shrink-0" />{issue}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+
                           <div className="px-5 py-3 border-t border-border bg-muted/5 flex items-center justify-between">
                              <Button variant="ghost" size="sm" className="text-xs h-7 text-muted-foreground hover:text-primary" onClick={() => openPreview(result.content, result.approach)}>
                                 <Play className="w-3 h-3 mr-1.5" /> Preview Output
@@ -1816,6 +1991,130 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                 </div>
              )}
            </AnimatePresence>
+
+           {/* ── Batch Pipeline Results ── */}
+           {batchResults && batchResults.length > 0 && (
+             <motion.div
+               initial={{ opacity: 0, y: 20 }}
+               animate={{ opacity: 1, y: 0 }}
+               className="space-y-4"
+             >
+               <div className="flex items-center justify-between">
+                 <h3 className="text-lg font-bold flex items-center gap-2">
+                   <Zap className="w-4 h-4 text-primary" />
+                   Batch Results
+                   <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{batchResults.length} prospects</span>
+                 </h3>
+                 <Button size="sm" variant="outline" className="text-xs h-7 gap-1.5"
+                   onClick={() => {
+                     const csv = ["Prospect,TotalScore,Specificity,Personalization,Angle,Structure,CTA,Hook,Penalty",
+                       ...batchResults.map(r =>
+                         [r.rowLabel, r.fullScore.total, r.fullScore.specificity, r.fullScore.personalization,
+                          r.fullScore.angle, r.fullScore.structure, r.fullScore.cta, r.fullScore.hook, -r.fullScore.genericPenalty].join(",")
+                       )].join("\n");
+                     const blob = new Blob([csv], { type: "text/csv" });
+                     const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+                     a.download = "batch-results.csv"; a.click();
+                   }}
+                 >
+                   <Download className="w-3 h-3" /> Export CSV
+                 </Button>
+               </div>
+
+               {/* Summary bar */}
+               <div className="grid grid-cols-3 gap-3">
+                 {(() => {
+                   const avg = Math.round(batchResults.reduce((s, r) => s + r.fullScore.total, 0) / batchResults.length);
+                   const strong = batchResults.filter(r => r.fullScore.total >= 90).length;
+                   const weak   = batchResults.filter(r => r.fullScore.total < 50).length;
+                   return [
+                     { label: "Avg Score", val: `${avg}/100`, col: avg >= 85 ? "text-emerald-600" : avg >= 70 ? "text-blue-600" : "text-amber-600" },
+                     { label: "Strong 🔥", val: strong.toString(), col: "text-emerald-600" },
+                     { label: "Weak ❌",   val: weak.toString(),   col: weak > 0 ? "text-red-500" : "text-muted-foreground" },
+                   ].map(m => (
+                     <div key={m.label} className="bg-card border border-border rounded-lg p-3 text-center">
+                       <p className={`text-xl font-bold ${m.col}`}>{m.val}</p>
+                       <p className="text-[10px] text-muted-foreground mt-0.5">{m.label}</p>
+                     </div>
+                   ));
+                 })()}
+               </div>
+
+               {/* Per-row cards */}
+               <div className="space-y-3">
+                 {batchResults.map((row, i) => {
+                   const s = row.fullScore;
+                   const dims = [
+                     { label: "Spec",  val: s.specificity,    max: 25, color: "bg-violet-500" },
+                     { label: "Pers",  val: s.personalization, max: 20, color: "bg-blue-500" },
+                     { label: "Angle", val: s.angle,          max: 20, color: "bg-emerald-500" },
+                     { label: "Struct",val: s.structure,      max: 15, color: "bg-teal-500" },
+                     { label: "CTA",   val: s.cta,            max: 10, color: "bg-amber-500" },
+                     { label: "Hook",  val: s.hook,           max: 10, color: "bg-orange-400" },
+                   ];
+                   return (
+                     <motion.div
+                       key={i}
+                       initial={{ opacity: 0, x: -10 }}
+                       animate={{ opacity: 1, x: 0 }}
+                       transition={{ delay: i * 0.05 }}
+                       className="bg-card border border-border rounded-xl overflow-hidden"
+                     >
+                       {/* Row header */}
+                       <div className="px-4 py-3 border-b border-border bg-muted/10 flex items-center justify-between gap-3">
+                         <div className="flex items-center gap-2 min-w-0">
+                           <span className="text-xs font-bold text-foreground truncate">{row.rowLabel}</span>
+                           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${outputScoreBadgeClass(s.total)}`}>
+                             {outputScoreEmoji(s.total)} {s.total}/100
+                           </span>
+                         </div>
+                         <div className="flex items-center gap-1 shrink-0">
+                           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(row.content)}>
+                             <Copy className="w-3 h-3" />
+                           </Button>
+                         </div>
+                       </div>
+
+                       {/* Score bars inline */}
+                       <div className="px-4 py-2 grid grid-cols-3 sm:grid-cols-6 gap-x-4 gap-y-1.5 border-b border-border bg-muted/5">
+                         {dims.map(d => (
+                           <div key={d.label} className="space-y-0.5">
+                             <div className="flex items-center justify-between">
+                               <p className="text-[9px] text-muted-foreground">{d.label}</p>
+                               <p className={`text-[9px] font-bold tabular-nums ${d.val === d.max ? "text-emerald-600" : ""}`}>{d.val}</p>
+                             </div>
+                             <div className="h-1 bg-muted rounded-full overflow-hidden">
+                               <div className={`h-full rounded-full ${d.color}`} style={{ width: `${(d.val / d.max) * 100}%` }} />
+                             </div>
+                           </div>
+                         ))}
+                       </div>
+
+                       {/* Prompt preview (collapsible) */}
+                       <details className="group">
+                         <summary className="px-4 py-2 text-[10px] text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1 select-none">
+                           <ChevronRight className="w-3 h-3 group-open:rotate-90 transition-transform" /> View prompt
+                         </summary>
+                         <div className="px-4 pb-4">
+                           <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words leading-relaxed font-mono bg-muted/30 rounded-lg p-3">
+                             {row.content}
+                           </pre>
+                         </div>
+                       </details>
+                     </motion.div>
+                   );
+                 })}
+               </div>
+             </motion.div>
+           )}
+
+           {isBatchRunning && (
+             <div className="grid grid-cols-1 gap-3">
+               {[1,2,3].map(i => (
+                 <div key={i} className="h-24 bg-card border border-border rounded-xl animate-pulse" />
+               ))}
+             </div>
+           )}
 
         </div>
       </div>
