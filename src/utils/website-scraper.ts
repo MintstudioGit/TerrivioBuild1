@@ -145,21 +145,42 @@ function findBestEvidence(text: string): string {
 // Ordered by specificity. First match wins. No match → "unknown".
 
 const WHAT_THEY_DO_PATTERNS: RegExp[] = [
-  /[Ww]e (?:help|build|provide|offer|enable|power|connect|make|create|give) ([^.!?\n]{15,120})/,
-  /(?:[Tt]he|[Aa]n?) (?:leading|premier|best|top|only|first|fastest) ([^.!?\n]{15,100})/,
-  /(?:[Oo]ur (?:platform|solution|tool|software|service|product)) (?:helps?|enables?|powers?|gives?) ([^.!?\n]{15,100})/,
-  /(?:[Pp]latform|[Ss]olution|[Tt]ool|[Ss]oftware|[Ss]ervice) (?:that|for|to) ([^.!?\n]{15,100})/,
+  // Direct first-person declarations
+  /[Ww]e (?:help|build|provide|offer|enable|power|connect|make|create|give|deliver|run|manage|source|place|generate|automate|train|coach|advise|consult) ([^.!?\n]{15,140})/,
+  // Third-person / name-based: "Acme is a platform..."
+  /[A-Z][a-zA-Z]+\s+(?:is|are) (?:a|an|the) ([^.!?\n]{15,130})/,
+  // "The X platform/tool/service that..."
+  /(?:[Tt]he|[Aa]n?) (?:leading|premier|best|top|only|first|fastest|most trusted|award.winning) ([^.!?\n]{15,110})/,
+  // "Our platform/solution/tool..."
+  /(?:[Oo]ur (?:platform|solution|tool|software|service|product|system|suite|engine)) (?:helps?|enables?|powers?|gives?|lets?|allows?) ([^.!?\n]{15,110})/,
+  // "Platform/solution/tool that/for..."
+  /(?:[Pp]latform|[Ss]olution|[Tt]ool|[Ss]oftware|[Ss]ervice|[Aa]gency|[Nn]etwork) (?:that|for|to|which) ([^.!?\n]{15,110})/,
+  // "Built to/for..."
+  /[Bb]uilt (?:to|for) ([^.!?\n]{15,100})/,
+  // "Helping X do Y"
+  /[Hh]elping ([^.!?\n]{15,110})/,
+  // Starts with action verb (automate, manage, generate...)
+  /^(?:[Aa]utomate|[Mm]anage|[Gg]enerate|[Ss]cale|[Gg]row|[Rr]un|[Hh]andle|[Tt]urn|[Cc]onvert|[Dd]rive) ([^.!?\n]{15,110})/m,
 ];
 
 const WHO_THEY_SERVE_PATTERNS: RegExp[] = [
-  /(?:for|serving|built for|designed for|used by|trusted by|helps?)\s+((?:enterprise|startup|smb|b2b|b2c|agency|recruiter|founder|executive|cmo|ceo|vp|director|marketer|sales team|hr|finance team|developer|engineer)[^.,\n]{0,80})/i,
-  /(?:our (?:customers?|clients?|users?)(?:\s+are)?)\s+([^.,\n]{15,100})/i,
-  /(?:teams? at|companies? like|brands? like)\s+([^.,\n]{10,80})/i,
+  // Explicit "for/serving/built for" + named segment
+  /(?:for|serving|built for|designed for|made for|used by|trusted by|helps?|perfect for)\s+((?:enterprise|startup|startup|smb|b2b|b2c|agency|recruiter|founder|executive|cmo|ceo|vp|director|marketer|sales team|hr|finance|developer|engineer|private equity|pe firm|vc|fund|portfolio|brand|retailer|insurer|law firm|consultanc)[^.,\n]{0,100})/i,
+  // "our customers/clients/users are..."
+  /(?:our (?:customers?|clients?|users?|partners?)(?:\s+are)?(?:\s+include)?)\s+([^.,\n]{15,110})/i,
+  // "teams at / companies like / brands like"
+  /(?:teams? at|companies? (?:like|including)|brands? (?:like|including)|leaders? at)\s+([^.,\n]{10,90})/i,
+  // Generic: any named segment with common B2B role words
+  /(?:founders?|executives?|directors?|vps?|cxos?|operators?|recruiters?|agencies|marketers?|sales (?:teams?|leaders?|reps?))\s+(?:who|at|in|across)\s+([^.,\n]{10,90})/i,
+  // "X companies", "X teams"
+  /([a-z][a-z\-]+ (?:companies|businesses|teams|organizations|agencies|firms))\s+(?:use|rely on|trust|choose)/i,
 ];
 
 const KEY_ACTIVITY_PATTERNS: RegExp[] = [
-  /[Ww]e (?:automate|manage|generate|build|place|recruit|source|publish|analyze|track|score|route|convert) ([^.!?\n]{10,100})/,
-  /(?:automates?|manages?|generates?|builds?|places?|sources?|publishes?|analyzes?|tracks?|scores?|routes?|converts?) ([^.!?\n]{10,100})/i,
+  /[Ww]e (?:automate|manage|generate|build|place|recruit|source|publish|analyze|track|score|route|convert|deliver|process|review|screen|write|train|coach|close|qualify|prioritize) ([^.!?\n]{10,110})/,
+  /(?:automates?|manages?|generates?|builds?|places?|sources?|publishes?|analyzes?|tracks?|scores?|routes?|converts?|delivers?|processes?|reviews?|screens?|writes?|trains?|coaches?|closes?|qualifies?|prioritizes?) ([^.!?\n]{10,110})/i,
+  // "Our X process / workflow / engine"
+  /(?:our|the) ([a-z][a-z ]{5,50}(?:process|workflow|engine|pipeline|system|approach|method|framework)) /i,
 ];
 
 const HIGH_RISK_PATTERNS: [RegExp, string][] = [
@@ -258,10 +279,12 @@ function calculateConfidence(fields: {
     fields.what_breaks_if_done_badly,
   ].filter(v => v !== "unknown" && v.length > 10);
 
-  score += resolved.length * 12; // max 72 for 6 fields
+  score += resolved.length * 10; // max 60 for 6 fields (was 12 → caused over-counting)
 
-  if (fields.evidence !== "unknown" && fields.evidence.length > 20) score += 20;
-  if (fields.key_activity !== "unknown") score += 5; // bonus for specificity indicator
+  if (fields.evidence !== "unknown" && fields.evidence.length > 20) score += 25; // evidence is king
+  if (fields.key_activity !== "unknown") score += 5;
+  // Bonus: if what_they_do + who_they_serve both present, very likely usable
+  if (fields.what_they_do !== "unknown" && fields.who_they_serve !== "unknown") score += 10;
 
   score += specificityPenalty(fullText);
 
@@ -310,9 +333,16 @@ export function compressToStructuredContext(rawText: string): StructuredContext 
       break;
     }
   }
-  // If still unknown and we have a good evidence sentence, use a trimmed version
+  // Fallback 1: use evidence sentence if it's specific enough
   if (what_they_do === "unknown" && evidence !== "unknown" && evidence.length > 25) {
     what_they_do = evidence.slice(0, 130);
+  }
+  // Fallback 2: use the first hero paragraph sentence if it reads like a description
+  if (what_they_do === "unknown" && priority.hero_paragraphs.length > 30) {
+    const firstSentence = splitSentences(priority.hero_paragraphs)[0] ?? "";
+    if (firstSentence.length >= 20 && firstSentence.length <= 180) {
+      what_they_do = firstSentence.slice(0, 130);
+    }
   }
 
   // who_they_serve
@@ -321,6 +351,11 @@ export function compressToStructuredContext(rawText: string): StructuredContext 
     const m = workingText.match(p);
     const candidate = m?.[1]?.trim();
     if (candidate && candidate.length > 8) { who_they_serve = candidate.slice(0, 100); break; }
+  }
+  // Fallback: infer from what_they_do if it contains "for X"
+  if (who_they_serve === "unknown" && what_they_do !== "unknown") {
+    const forMatch = what_they_do.match(/\bfor ([a-z][^,.]{8,70})/i);
+    if (forMatch?.[1]) who_they_serve = forMatch[1].trim().slice(0, 100);
   }
 
   // key_activity
@@ -353,7 +388,7 @@ export function compressToStructuredContext(rawText: string): StructuredContext 
     { what_they_do, who_they_serve, key_activity, high_risk_area, how_they_make_money, what_breaks_if_done_badly, evidence },
     workingText
   );
-  const is_valid = confidence >= 60;
+  const is_valid = confidence >= 45; // lowered from 60 — partial context is still usable
 
   return {
     what_they_do, who_they_serve, key_activity,

@@ -960,13 +960,12 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
       const activeSender = editedSenderCtx ?? senderContext ?? null;
       const primaryCtx   = activeLead ?? activeSender ?? null;
 
-      // Quality gate: warn if context was scraped but confidence < 60 AND not manually edited
-      if (primaryCtx && (primaryCtx.confidence ?? 0) < 60 && !editedLeadCtx && !editedSenderCtx) {
-        setIsGenerating(false);
-        toast.error("Context too generic — outputs will be low quality", {
-          description: "The scraped page didn't yield specific enough signal. Edit the Evidence field or paste a sentence from their site."
+      // Quality gate: warn if context confidence is very low but still allow generation
+      if (primaryCtx && (primaryCtx.confidence ?? 0) < 40 && !editedLeadCtx && !editedSenderCtx) {
+        toast.warning("Context is generic — output quality may be lower", {
+          description: "The scraped page didn't yield specific signal. Edit the Evidence field or paste a sentence from their site for better results."
         });
-        return;
+        // fall through — still generate
       }
 
       const structuredCtxForPrompt = primaryCtx ? {
@@ -1443,7 +1442,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                             )}
                             {suggestedAngle && !editLeadOpen && (
                               <p className="text-[9px] mt-1.5 pt-1.5 border-t border-blue-500/20 text-blue-700 font-bold">
-                                ⚡ Suggested angle: {VARIANT_TEMPLATES.find(t => ((t as { insight?: string }).insight ?? (t as { angle?: string }).angle) === suggestedAngle)?.approach}
+                                ⚡ Suggested angle: {VARIANT_TEMPLATES.find(t => t.angle === suggestedAngle)?.approach}
                               </p>
                             )}
                           </div>
@@ -1675,7 +1674,7 @@ export function GeneratorPage({ initialTab = "builder" }: { initialTab?: "builde
                     {VARIANT_TEMPLATES.map((tmpl, idx) => {
                        const isSelected = selectedApproaches.includes(idx);
                        const isLocked = !isPro && idx > 2;
-                       const isSuggested = !isSelected && !isLocked && suggestedAngle !== null && (((tmpl as { insight?: string }).insight ?? (tmpl as { angle?: string }).angle) === suggestedAngle);
+                       const isSuggested = !isSelected && !isLocked && suggestedAngle !== null && tmpl.angle === suggestedAngle;
 
                        return (
                          <motion.button
