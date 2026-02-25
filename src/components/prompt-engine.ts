@@ -315,18 +315,18 @@ const ANGLE_DEFINITIONS: Record<AngleType, AngleDefinition> = {
 Step 2 — From that sentence, extract: (a) the core outcome they promise, and (b) the customer segment they serve.
 Step 3 — Identify ONE specific tactic, channel, or capability that high-performers in this segment use to drive that same outcome — but this company is likely NOT doing it, based on what is absent from the Evidence.
 Step 4 — Write the email:
-  LINE 1: State the gap as a sharp, specific observation about their segment — NOT a question, NOT a compliment. Use a word or phrase directly from the Evidence. Format: "[Thing competitors in their segment are doing] — [implication that this company is behind]."
+  LINE 1: Open with a pointed question that names the specific gap — must end with "?". Use a word or phrase directly from the Evidence. Format: "Is [specific gap in their segment] why [their stated outcome] is harder than it needs to be?"
   LINE 2: One sentence on what this gap is likely costing them right now. Be concrete: pipeline, positioning, deal speed, or retention — pick one. Never say "efficiency" or "ROI".
   LINE 3: One sentence on what closing this gap would unlock. Must be traceable to their stated outcome (from Evidence).
-  LINE 4: CTA — one yes/no question: "Is [the gap] on your radar for [this quarter / this cycle]?" Nothing else.
+  LINE 4: CTA — one sentence using one of these exact words: "worth", "curious", "makes sense", "open to", "thoughts?", "sound familiar", "resonates". Example: "Curious if this is on your radar for this quarter?" or "Worth a quick look at whether [gap] is holding back [their outcome]?"
 If Evidence is missing → use 'Core activity' + 'Customers' to infer the gap.
 If both are missing → output exactly: [CONTEXT NEEDED — please complete the context fields before generating].`,
         generalInstruction: "Identify the single most important tactic or capability missing from the current approach and frame it as a specific, recoverable gap with a named cost and a clear unlock.",
         structure: [
-            "LINE 1: Name the gap as a sharp observation — one sentence, no question, uses a word from their context",
+            "LINE 1: Open with a pointed question naming the gap — must end with '?' — use a word directly from Evidence",
             "LINE 2: One sentence — what this gap is costing them right now (pick one: pipeline, positioning, deal speed, or retention)",
             "LINE 3: One sentence — what closing this gap unlocks, tied to their stated outcome",
-            "LINE 4: CTA — a single yes/no question asking if this is on their radar"
+            "LINE 4: CTA — must use one of: worth / curious / makes sense / open to / thoughts? / sound familiar / resonates",
         ],
         constraint: "Every line must be traceable to the Evidence or Context fields. If any line could apply to any company in any industry → rewrite that line with explicit specificity before outputting."
     },
@@ -526,7 +526,8 @@ export function generateCOSTARPrompt(opts: {
     if (isSales) {
         // New master prompt — forces specificity, angle, and hard constraints
         return [
-            `You are an elite B2B outbound strategist.`,
+            `You are an elite B2B outbound strategist — does every sentence prove you know this company specifically?`,
+
             `Role: ${role}`,
             `Industry: ${industry}`,
             "",
@@ -541,11 +542,11 @@ export function generateCOSTARPrompt(opts: {
             "",
             "RULES:",
             "- Max 75 words total",
-            "- No buzzwords (no: \"streamline\", \"leverage\", \"efficiency\", \"ROI\", \"innovative\", \"cutting-edge\", \"game-changer\")",
-            "- No filler openers ("I came across your company", "Hope this finds you well", "I wanted to reach out")",
+            "- No buzzwords — ban all vendor-speak (efficiency, ROI, innovative, game-changer, disruptive, transformative)",
+            "- No filler openers (\"I came across your company\", \"Hope this finds you well\", \"I wanted to reach out\")",
             "- Every sentence must contain a specific, verifiable claim — no vague generalities",
             "- Use one word or phrase directly from the CONTEXT to prove you read it",
-            "- CTA must be a yes/no question — never a calendar link or demo request",
+            "- CTA must use one of these exact words: worth / curious / makes sense / open to / thoughts? / sound familiar / resonates — never a meeting request or calendar link",
             "- Tone: peer writing to peer — no marketing voice, no flattery, no pressure",
             "- The gap named in line 1 must be specific to their segment — not reusable across industries",
             "",
@@ -561,6 +562,7 @@ export function generateCOSTARPrompt(opts: {
             "GOAL:",
             `The reader should think: "this person understands my business specifically — not just my industry."`,
             `The email scores 80+ out of 100 on: specificity, relevance to their context, insight quality, and CTA clarity.`,
+            `The CTA must include one of: "worth", "curious", "makes sense", "open to", "thoughts?", "sound familiar", "ring true", "resonates" — this is not optional.`,
             `Output ONLY the email body. No subject line. No preamble. No meta-commentary.`,
             contextBlock
         ].filter(Boolean).join("\n");
