@@ -590,24 +590,6 @@ export function PipelineBuilderPage() {
     </div>
   );
 }
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-            className="flex flex-col gap-3"
-          >
-            <h1 className="text-2xl md:text-4xl font-bold tracking-tight text-balance">
-              Turn your lead list into a structured outbound system
-            </h1>
-            <p className="text-muted-foreground text-base md:text-lg max-w-3xl leading-relaxed">
-              Upload a CSV &rarr; enrich with real website context &rarr; generate multi-step prompts &rarr; export to Clay/Zapier.
-            </p>
-          </motion.div>
-        </div>
-      </section>
-
-      {/* STEP NAVIGATOR */}
-      <div className="border-b border-border bg-card/50 sticky top-16 z-30 backdrop-blur-md">
         <div className="max-w-6xl mx-auto px-4">
           <div className="flex items-center gap-1 overflow-x-auto py-3 scrollbar-none">
             {STEPS.map((step, i) => (
