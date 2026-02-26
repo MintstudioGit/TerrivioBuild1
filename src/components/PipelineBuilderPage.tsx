@@ -134,33 +134,25 @@ export function PipelineBuilderPage() {
     }
   }, [csvData, currentRowIndex, enableContext, businessWebsite]);
 
-  // Batch generate all
+  // Batch generate all - instant processing
   const generateBatch = useCallback(async () => {
     if (!csvData.length) return;
 
     setIsGenerating(true);
-    setCurrentStep("preview");
+    setCurrentStep("results");
+    
     try {
-      const results: ProcessedRow[] = [];
-
-      for (let i = 0; i < csvData.length; i++) {
-        const row = csvData[i];
-        const generated = `Subject: Quick question about ${row.company || "your business"}\n\nHi ${
+      // Generate all at once (no delays, no sequential processing)
+      const results: ProcessedRow[] = csvData.map((row) => ({
+        original: row,
+        generated: `Subject: Quick question about ${row.company || "your business"}\n\nHi ${
           row.name || "there"
-        },\n\nI noticed your team is doing great work. I think we could help streamline your workflow.\n\nWould love to chat briefly.\n\nBest,\nTeam`;
-
-        results.push({
-          original: row,
-          generated,
-          quality: 0.75 + Math.random() * 0.2,
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
+        },\n\nI noticed your team is doing great work. I think we could help streamline your workflow.\n\nWould love to chat briefly.\n\nBest,\nTeam`,
+        quality: 0.75 + Math.random() * 0.2,
+      }));
 
       setProcessedData(results);
-      setCurrentStep("results");
-      toast.success(`Generated ${results.length} rows!`);
+      toast.success(`Generated ${results.length} rows instantly!`);
     } catch (error) {
       toast.error("Batch generation failed");
     } finally {
@@ -251,14 +243,14 @@ export function PipelineBuilderPage() {
       <div className="border-b border-border bg-background">
         <div className="max-w-6xl mx-auto px-6 py-3">
           <div className="flex items-center justify-between">
-            {(["upload", "preview", "results"] as const).map((step, idx) => (
+            {(["upload", "results"] as const).map((step, idx) => (
               <div key={step} className="flex items-center flex-1">
                 <div
                   className={cn(
                     "w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all",
                     currentStep === step
                       ? "bg-primary text-primary-foreground"
-                      : ["upload", "preview"].includes(currentStep) && idx <= ["upload", "preview"].indexOf(currentStep)
+                      : ["upload"].includes(currentStep) && idx <= ["upload"].indexOf(currentStep)
                         ? "bg-primary/30 text-primary"
                         : "bg-muted text-muted-foreground"
                   )}
@@ -273,7 +265,7 @@ export function PipelineBuilderPage() {
                 >
                   {step}
                 </div>
-                {idx < 2 && (
+                {idx < 1 && (
                   <ChevronRight className={cn("w-4 h-4", currentStep === step ? "text-primary" : "text-muted")} />
                 )}
               </div>
@@ -450,38 +442,7 @@ export function PipelineBuilderPage() {
             </motion.div>
           )}
 
-          {/* STEP 2: GENERATING */}
-          {currentStep === "preview" && isGenerating && (
-            <motion.div
-              key="generating"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.3 }}
-              className="text-center py-12"
-            >
-              <div className="inline-block p-4 rounded-lg bg-primary/10 mb-4">
-                <Zap className="w-6 h-6 text-primary animate-pulse" />
-              </div>
-              <h2 className="text-xl font-semibold text-foreground mb-2">Generating outputs...</h2>
-              <p className="text-muted-foreground mb-6">Processing {csvData.length} rows with AI</p>
-              <div className="max-w-xs mx-auto space-y-2">
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-primary"
-                    initial={{ width: "0%" }}
-                    animate={{ width: `${(processedData.length / csvData.length) * 100}%` }}
-                    transition={{ duration: 0.3 }}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {processedData.length} of {csvData.length} completed
-                </p>
-              </div>
-            </motion.div>
-          )}
-
-          {/* STEP 3: RESULTS & EXPORT */}
+          {/* STEP 2: RESULTS (instant) */}
           {currentStep === "results" && processedData.length > 0 && (
             <motion.div
               key="results"
