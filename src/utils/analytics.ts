@@ -1,5 +1,5 @@
 /**
- * Analytics — PostHog wrapper
+ * Analytics — PostHog wrapper (optional, graceful fallback if not installed)
  *
  * Usage:
  *   import { analytics } from "@/utils/analytics";
@@ -7,11 +7,21 @@
  *   analytics.page();   // call on route change
  *
  * Env-var: VITE_POSTHOG_KEY (set in .env.local)
- * If the key is absent the module is a silent no-op, so local dev never
- * sends events unless you explicitly set it.
+ * If the key is absent or posthog-js is not installed, the module is a silent no-op.
  */
 
-import posthog from "posthog-js";
+let posthog: any;
+try {
+  posthog = require("posthog-js");
+} catch {
+  // PostHog is optional - if not installed, use no-op
+  posthog = {
+    init: () => {},
+    identify: () => {},
+    capture: () => {},
+    reset: () => {},
+  };
+}
 
 const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const POSTHOG_HOST =
@@ -21,16 +31,20 @@ const POSTHOG_HOST =
 let initialised = false;
 
 function init() {
-  if (initialised || !POSTHOG_KEY) return;
-  posthog.init(POSTHOG_KEY, {
-    api_host: POSTHOG_HOST,
-    person_profiles: "identified_only", // GDPR-friendly default
-    capture_pageview: false,            // we call page() manually on route change
-    capture_pageleave: true,
-    autocapture: false,                 // only explicit track() calls
-    persistence: "localStorage",
-  });
-  initialised = true;
+  if (initialised || !POSTHOG_KEY || !posthog.init) return;
+  try {
+    posthog.init(POSTHOG_KEY, {
+      api_host: POSTHOG_HOST,
+      person_profiles: "identified_only",
+      capture_pageview: false,
+      capture_pageleave: true,
+      autocapture: false,
+      persistence: "localStorage",
+    });
+    initialised = true;
+  } catch {
+    // Silently fail if PostHog initialization errors
+  }
 }
 
 export const analytics = {
