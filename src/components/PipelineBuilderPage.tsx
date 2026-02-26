@@ -1,1358 +1,1114 @@
-import { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useMemo } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 import { Label } from "./ui/label";
-import { Switch } from "./ui/switch";
 import { Badge } from "./ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { cn } from "./ui/utils";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Upload,
-  ArrowRight,
-  CheckCircle2,
-  Zap,
-  Download,
-  Copy,
-  Check,
-  RefreshCw,
-  FileJson,
-  FileText,
-  ChevronRight,
+  Upload, ArrowRight, CheckCircle2, Zap, Download, Copy, Check,
+  RefreshCw, FileText, ChevronRight, ChevronDown, AlertTriangle,
+  Play, Pause, Eye, Table2, BarChart3, Sparkles, X, FileJson,
+  Globe, Target, Settings2,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "sonner@2.0.3";
+import { useDesignContext } from "./DesignController";
+import {
+  VARIANT_TEMPLATES,
+  generateCOSTARPrompt,
+  type SignalType,
+  type AngleType,
+} from "./prompt-engine";
+import { VARIANT_TYPE_MAP } from "./generator/generator-constants";
+import { scrapeWebsiteContext, type StructuredContext } from "../utils/website-scraper";
+import { scoreOutput } from "../utils/output-scorer";
+import { projectId } from "../utils/supabase/info";
 
-type PipelineStep = "upload" | "preview" | "results";
+// ─── TYPES ────────────────────────────────────────────────────────────────────
 
 interface CSVRow {
   [key: string]: string;
 }
 
-interface ProcessedRow {
-  original: CSVRow;
-  generated: string;
-  quality: number;
+interface ColumnMapping {
+  name: string;
+  company: string;
+  website: string;
+  email: string;
+  role: string;
+  industry: string;
+  pain_point: string;
+  custom_context: string;
 }
 
-export function PipelineBuilderPage() {
-  const [currentStep, setCurrentStep] = useState<PipelineStep>("upload");
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [csvData, setCsvData] = useState<CSVRow[]>([]);
-  const [processedData, setProcessedData] = useState<ProcessedRow[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+type RowStatus = "pending" | "running" | "done" | "error";
 
-  // Configuration
-  const [enableContext, setEnableContext] = useState(true);
-  const [businessWebsite, setBusinessWebsite] = useState("");
-  const [tone, setTone] = useState<"Professional" | "Casual" | "Technical">("Professional");
+interface PipelineRow {
+  index: number;
+  original: CSVRow;
+  prompt: string;
+  output: string;
+  outputScore: number;
+  status: RowStatus;
+  error?: string;
+}
 
-  // Preview & results
-  const [currentRowIndex, setCurrentRowIndex] = useState(0);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [copied, setCopied] = useState(false);
+// ─── COLUMN AUTO-DETECT ───────────────────────────────────────────────────────
 
-  // Parse CSV
-  const parseCSV = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      const lines = text.split("\n").filter((line) => line.trim());
-      const headers = lines[0].split(",").map((h) => h.trim());
-      const rows: CSVRow[] = [];
+const COLUMN_PATTERNS: Record<keyof ColumnMapping, RegExp> = {
+  name:           /^(name|first.?name|contact.?name|person|full.?name)$/i,
+  company:        /^(company|company.?name|org(anization)?|account|employer)$/i,
+  website:        /^(website|url|domain|company.?url|web|homepage|site)$/i,
+  email:          /^(email|email.?address|work.?email|mail)$/i,
+  role:           /^(role|title|job.?title|position|seniority|function)$/i,
+  industry:       /^(industry|vertical|sector|niche|market)$/i,
+  pain_point:     /^(pain|pain.?point|challenge|problem|issue|need)$/i,
+  custom_context: /^(context|notes|extra|custom|additional|background)$/i,
+};
 
-      for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(",").map((v) => v.trim());
-        const row: CSVRow = {};
-        headers.forEach((header, idx) => {
-          row[header] = values[idx] || "";
-        });
-        rows.push(row);
+function autoDetectColumns(headers: string[]): ColumnMapping {
+  const mapping: ColumnMapping = {
+    name: "", company: "", website: "", email: "",
+    role: "", industry: "", pain_point: "", custom_context: "",
+  };
+  for (const header of headers) {
+    for (const [key, pattern] of Object.entries(COLUMN_PATTERNS)) {
+      if (!mapping[key as keyof ColumnMapping] && pattern.test(header.trim())) {
+        mapping[key as keyof ColumnMapping] = header.trim();
       }
+    }
+  }
+  return mapping;
+}
 
-      setCsvData(rows);
-      setCsvFile(file);
-      setProcessedData([]);
-      setCurrentRowIndex(0);
-      toast.success(`Loaded ${rows.length} rows`);
-    };
-    reader.readAsText(file);
-  }, []);
+function buildRowContext(row: CSVRow, mapping: ColumnMapping): string {
+  const parts: string[] = [];
+  if (mapping.company && row[mapping.company]) parts.push(`Company: ${row[mapping.company]}`);
+  if (mapping.role && row[mapping.role]) parts.push(`Role: ${row[mapping.role]}`);
+  if (mapping.industry && row[mapping.industry]) parts.push(`Industry: ${row[mapping.industry]}`);
+  if (mapping.pain_point && row[mapping.pain_point]) parts.push(`Pain point: ${row[mapping.pain_point]}`);
+  if (mapping.custom_context && row[mapping.custom_context]) parts.push(row[mapping.custom_context]);
+  return parts.join(" | ");
+}
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragging(false);
-      const file = e.dataTransfer.files[0];
-      if (file && file.name.endsWith(".csv")) {
-        parseCSV(file);
-      } else {
-        toast.error("Please drop a CSV file");
-      }
-    },
-    [parseCSV]
+/**
+ * Maps a CSV row + column mapping to a StructuredContext so the prompt engine
+ * and output scorer can use it for personalization.
+ * Pain point → evidence (most valuable signal).
+ * Custom context → what_they_do fallback.
+ */
+function rowToStructuredContext(row: CSVRow, mapping: ColumnMapping, senderCtx?: string, yourOffer?: string): StructuredContext {
+  const company   = (mapping.company   && row[mapping.company])   || "";
+  const role      = (mapping.role      && row[mapping.role])      || "";
+  const industry  = (mapping.industry  && row[mapping.industry])  || "";
+  const painPoint = (mapping.pain_point && row[mapping.pain_point]) || "";
+  const custom    = (mapping.custom_context && row[mapping.custom_context]) || "";
+
+  // Build what_they_do from company + industry context
+  const what_they_do = [
+    company ? `${company}` : "",
+    industry ? `(${industry})` : "",
+    custom || "",
+  ].filter(Boolean).join(" ").trim() || "unknown";
+
+  // evidence = pain point is the richest per-row signal
+  const evidence = painPoint.length > 10 ? painPoint.slice(0, 220) : "unknown";
+
+  // who_they_serve = the role/seniority of the contact we're writing to
+  const who_they_serve = role || "unknown";
+
+  // key_activity: extract a verb phrase from pain point if possible
+  const kvMatch = painPoint.match(/\b(?:automate|manage|generate|source|recruit|track|scale|grow|convert|close|reduce) [^.,!?]{5,80}/i);
+  const key_activity = kvMatch ? kvMatch[0].slice(0, 100) : "unknown";
+
+  const resolvedCount = [what_they_do, who_they_serve, key_activity, evidence]
+    .filter(v => v !== "unknown").length;
+  const confidence = Math.min(40 + resolvedCount * 15, 90); // 40–85 range
+
+  return {
+    what_they_do,
+    who_they_serve,
+    key_activity,
+    high_risk_area: "unknown",
+    how_they_make_money: "unknown",
+    what_breaks_if_done_badly: "unknown",
+    evidence,
+    confidence,
+    is_valid: confidence >= 45,
+    quality_score: confidence / 100,
+    // Attach offer data for richer context block
+    ...(yourOffer ? { your_offer: yourOffer.slice(0, 150) } : {}),
+  } as StructuredContext & { your_offer?: string };
+}
+
+// ─── LLM CALL ────────────────────────────────────────────────────────────────
+
+async function callLLM(prompt: string, accessToken: string): Promise<{ output: string; score: number }> {
+  const res = await fetch(
+    `https://${projectId}.supabase.co/functions/v1/make-server-a2b5dce9/preview-prompt`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ prompt, model: "gpt-4o-mini" }),
+    }
   );
+  if (!res.ok) throw new Error(`LLM call failed: ${res.status}`);
+  const data = await res.json() as { output: string; score: number; conversion_likelihood?: number };
+  return { output: data.output ?? "", score: data.score ?? 0 };
+}
 
-  const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files?.[0]) {
-        parseCSV(e.target.files[0]);
-      }
-    },
-    [parseCSV]
-  );
+// ─── SMALL UI COMPONENTS ──────────────────────────────────────────────────────
 
-  // Generate output for current row
-  const generateOutput = useCallback(async () => {
-    if (!csvData[currentRowIndex]) return;
-
-    setIsGenerating(true);
-    try {
-      const row = csvData[currentRowIndex];
-      const context = enableContext && businessWebsite ? `\nTarget website: ${businessWebsite}` : "";
-
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-
-      const generated = `Subject: ${row.company ? `Quick question about ${row.company}` : "Let's connect"}\n\nHi ${row.name || "there"},\n\nI noticed your team is doing great work. I think we could help you save time on your current workflow.\n\nWould you be open to a quick 15-min chat?\n\nBest,\nYour Sales Team`;
-
-      const newProcessed: ProcessedRow = {
-        original: row,
-        generated,
-        quality: 0.82,
-      };
-
-      setProcessedData((prev) => {
-        const updated = [...prev];
-        updated[currentRowIndex] = newProcessed;
-        return updated;
-      });
-
-      toast.success("Generated output for row " + (currentRowIndex + 1));
-    } catch (error) {
-      toast.error("Failed to generate output");
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [csvData, currentRowIndex, enableContext, businessWebsite]);
-
-  // Batch generate all
-  const generateBatch = useCallback(async () => {
-    if (!csvData.length) return;
-
-    setIsGenerating(true);
-    setCurrentStep("preview");
-    try {
-      const results: ProcessedRow[] = [];
-
-      for (let i = 0; i < csvData.length; i++) {
-        const row = csvData[i];
-        const generated = `Subject: Quick question about ${row.company || "your business"}\n\nHi ${
-          row.name || "there"
-        },\n\nI noticed your team is doing great work. I think we could help streamline your workflow.\n\nWould love to chat briefly.\n\nBest,\nTeam`;
-
-        results.push({
-          original: row,
-          generated,
-          quality: 0.75 + Math.random() * 0.2,
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-
-      setProcessedData(results);
-      setCurrentStep("results");
-      toast.success(`Generated ${results.length} rows!`);
-    } catch (error) {
-      toast.error("Batch generation failed");
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [csvData]);
-
-  // Export functions
-  const exportAsCSV = useCallback(() => {
-    if (!processedData.length) return;
-
-    const headers = ["company", "name", "generated_output"];
-    const rows = processedData.map((p) => [
-      p.original.company || "",
-      p.original.name || "",
-      `"${p.generated.replace(/"/g, '""')}"`,
-    ]);
-
-    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "outreach_results.csv";
-    a.click();
-    toast.success("Downloaded CSV");
-  }, [processedData]);
-
-  const exportAsJSON = useCallback(() => {
-    if (!processedData.length) return;
-
-    const data = processedData.map((p) => ({
-      original: p.original,
-      generated_output: p.generated,
-      quality_score: p.quality,
-    }));
-
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "outreach_results.json";
-    a.click();
-    toast.success("Downloaded JSON");
-  }, [processedData]);
-
-  const copyToClipboard = useCallback(() => {
-    const currentOutput = processedData[currentRowIndex]?.generated;
-    if (currentOutput) {
-      navigator.clipboard.writeText(currentOutput);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      toast.success("Copied to clipboard");
-    }
-  }, [processedData, currentRowIndex]);
-
-  const avgQuality = processedData.length
-    ? (processedData.reduce((sum, p) => sum + p.quality, 0) / processedData.length * 100).toFixed(0)
-    : 0;
-
+function ProgressBar({ value, max, label }: { value: number; max: number; label?: string }) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">Sales Pipeline</h1>
-            <p className="text-sm text-muted-foreground mt-1">Generate personalized outreach at scale</p>
-          </div>
-          <div className="flex gap-2">
-            {currentStep !== "upload" && (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setCurrentStep("upload");
-                  setCsvData([]);
-                  setProcessedData([]);
-                }}
-              >
-                Start Over
-              </Button>
-            )}
-          </div>
+    <div className="space-y-1">
+      {label && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="font-bold text-foreground">{value}/{max} — {pct}%</span>
         </div>
-      </div>
-
-      {/* Progress Bar */}
-      <div className="border-b border-border bg-background">
-        <div className="max-w-6xl mx-auto px-6 py-3">
-          <div className="flex items-center justify-between">
-            {(["upload", "preview", "results"] as const).map((step, idx) => (
-              <div key={step} className="flex items-center flex-1">
-                <div
-                  className={cn(
-                    "w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all",
-                    currentStep === step
-                      ? "bg-primary text-primary-foreground"
-                      : ["upload", "preview"].includes(currentStep) && idx <= ["upload", "preview"].indexOf(currentStep)
-                        ? "bg-primary/30 text-primary"
-                        : "bg-muted text-muted-foreground"
-                  )}
-                >
-                  {idx + 1}
-                </div>
-                <div
-                  className={cn(
-                    "text-xs font-medium flex-1 ml-3 capitalize",
-                    currentStep === step ? "text-foreground" : "text-muted-foreground"
-                  )}
-                >
-                  {step}
-                </div>
-                {idx < 2 && (
-                  <ChevronRight className={cn("w-4 h-4", currentStep === step ? "text-primary" : "text-muted")} />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-6 py-12">
-        <AnimatePresence mode="wait">
-          {/* STEP 1: UPLOAD & CONFIGURE */}
-          {currentStep === "upload" && (
-            <motion.div
-              key="upload"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.3 }}
-              className="space-y-6"
-            >
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* File Upload */}
-                <div className="lg:col-span-2">
-                  <div
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setIsDragging(true);
-                    }}
-                    onDragLeave={() => setIsDragging(false)}
-                    onDrop={handleDrop}
-                    className={cn(
-                      "border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer",
-                      isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
-                    )}
-                  >
-                    <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                    <p className="font-semibold text-foreground mb-1">Drop your CSV here</p>
-                    <p className="text-sm text-muted-foreground mb-4">
-                      Expected columns: name, company, email, website (optional: pain_point, title)
-                    </p>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".csv"
-                      onChange={handleFileInput}
-                      className="hidden"
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      Browse Files
-                    </Button>
-                  </div>
-
-                  {csvData.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="mt-6 p-4 rounded-lg border border-border bg-card"
-                    >
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 className="w-5 h-5 text-green-500" />
-                          <span className="font-medium text-foreground">
-                            {csvData.length} rows loaded
-                          </span>
-                        </div>
-                        <Badge variant="secondary">{csvFile?.name}</Badge>
-                      </div>
-
-                      {/* Data Preview */}
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b border-border">
-                              {Object.keys(csvData[0] || {}).map((key) => (
-                                <th key={key} className="text-left py-2 px-3 font-semibold text-muted-foreground">
-                                  {key}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {csvData.slice(0, 3).map((row, idx) => (
-                              <tr key={idx} className="border-b border-border/50 hover:bg-muted/30">
-                                {Object.values(row).map((val, vidx) => (
-                                  <td key={vidx} className="py-2 px-3 text-foreground truncate">
-                                    {val}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      {csvData.length > 3 && (
-                        <p className="text-xs text-muted-foreground mt-2">
-                          +{csvData.length - 3} more rows
-                        </p>
-                      )}
-                    </motion.div>
-                  )}
-                </div>
-
-                {/* Configuration Panel */}
-                <div className="space-y-4">
-                  <div className="p-4 rounded-lg border border-border bg-card/50 space-y-4">
-                    <h3 className="font-semibold text-foreground">Configuration</h3>
-
-                    {/* Enable Context */}
-                    <div className="flex items-start justify-between gap-3">
-                      <Label className="text-sm cursor-pointer">
-                        <span>Context Extraction</span>
-                        <p className="text-xs text-muted-foreground font-normal mt-1">
-                          Analyze company data
-                        </p>
-                      </Label>
-                      <Switch checked={enableContext} onCheckedChange={setEnableContext} className="mt-1" />
-                    </div>
-
-                    {/* Website URL */}
-                    {enableContext && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                      >
-                        <Label className="text-sm">Business Website</Label>
-                        <Input
-                          placeholder="https://yourcompany.com"
-                          value={businessWebsite}
-                          onChange={(e) => setBusinessWebsite(e.target.value)}
-                          className="mt-2"
-                        />
-                      </motion.div>
-                    )}
-
-                    {/* Tone */}
-                    <div>
-                      <Label className="text-sm mb-2 block">Tone</Label>
-                      <div className="space-y-2">
-                        {(["Professional", "Casual", "Technical"] as const).map((t) => (
-                          <button
-                            key={t}
-                            onClick={() => setTone(t)}
-                            className={cn(
-                              "w-full text-left text-sm px-3 py-2 rounded transition-colors",
-                              tone === t
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted hover:bg-muted/80 text-foreground"
-                            )}
-                          >
-                            {t}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Next Button */}
-                    <Button
-                      className="w-full mt-4"
-                      disabled={!csvData.length || isGenerating}
-                      onClick={() => generateBatch()}
-                    >
-                      {isGenerating ? "Generating..." : "Generate for all rows"}
-                      <ArrowRight className="w-4 h-4 ml-2" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* STEP 2: GENERATING */}
-          {currentStep === "preview" && isGenerating && (
-            <motion.div
-              key="generating"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.3 }}
-              className="text-center py-12"
-            >
-              <div className="inline-block p-4 rounded-lg bg-primary/10 mb-4">
-                <Zap className="w-6 h-6 text-primary animate-pulse" />
-              </div>
-              <h2 className="text-xl font-semibold text-foreground mb-2">Generating outputs...</h2>
-              <p className="text-muted-foreground mb-6">Processing {csvData.length} rows with AI</p>
-              <div className="max-w-xs mx-auto space-y-2">
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-primary"
-                    initial={{ width: "0%" }}
-                    animate={{ width: `${(processedData.length / csvData.length) * 100}%` }}
-                    transition={{ duration: 0.3 }}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {processedData.length} of {csvData.length} completed
-                </p>
-              </div>
-            </motion.div>
-          )}
-
-          {/* STEP 3: RESULTS & EXPORT */}
-          {currentStep === "results" && processedData.length > 0 && (
-            <motion.div
-              key="results"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.3 }}
-              className="space-y-6"
-            >
-              {/* Stats */}
-              <div className="grid grid-cols-3 gap-4">
-                <div className="p-4 rounded-lg border border-border bg-card">
-                  <p className="text-xs text-muted-foreground mb-1">Total Rows</p>
-                  <p className="text-2xl font-bold text-foreground">{processedData.length}</p>
-                </div>
-                <div className="p-4 rounded-lg border border-border bg-card">
-                  <p className="text-xs text-muted-foreground mb-1">Avg Quality</p>
-                  <div className="flex items-end gap-2">
-                    <p className="text-2xl font-bold text-foreground">{avgQuality}%</p>
-                  </div>
-                </div>
-                <div className="p-4 rounded-lg border border-border bg-card">
-                  <p className="text-xs text-muted-foreground mb-1">Status</p>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5 text-green-500" />
-                    <p className="font-semibold text-foreground">Complete</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Export Options */}
-              <div className="p-6 rounded-lg border border-border bg-card/50 space-y-4">
-                <h3 className="font-semibold text-foreground flex items-center gap-2">
-                  <Download className="w-5 h-5" />
-                  Export Results
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <Button
-                    variant="outline"
-                    onClick={exportAsCSV}
-                    className="flex items-center justify-center gap-2"
-                  >
-                    <FileText className="w-4 h-4" />
-                    Download CSV
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={exportAsJSON}
-                    className="flex items-center justify-center gap-2"
-                  >
-                    <FileJson className="w-4 h-4" />
-                    Download JSON
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!processedData[0]?.generated}
-                    onClick={copyToClipboard}
-                    className="flex items-center justify-center gap-2"
-                  >
-                    {copied ? (
-                      <Check className="w-4 h-4" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                    {copied ? "Copied" : "Copy First"}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Sample Outputs */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-foreground">Sample Outputs</h3>
-                <div className="space-y-4">
-                  {processedData.slice(0, 3).map((row, idx) => (
-                    <motion.div
-                      key={idx}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.1 }}
-                      className="p-4 rounded-lg border border-border bg-card/30 space-y-2"
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">
-                            {row.original.name || row.original.company}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {row.original.company}
-                          </p>
-                        </div>
-                        <Badge variant="secondary">
-                          {(row.quality * 100).toFixed(0)}% quality
-                        </Badge>
-                      </div>
-                      <pre className="text-xs bg-muted p-3 rounded text-foreground overflow-x-auto whitespace-pre-wrap break-words">
-                        {row.generated}
-                      </pre>
-                    </motion.div>
-                  ))}
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      )}
+      <div className="h-2 bg-muted rounded-full overflow-hidden">
+        <motion.div
+          className="h-full bg-primary rounded-full"
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+        />
       </div>
     </div>
   );
 }
 
-      {/* MAIN CONTENT */}
-      <div className="flex-1">
-        <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
-          <AnimatePresence mode="wait">
-            {currentStep === "upload" && (
-              <StepContainer key="upload">
-                <StepHeader
-                  number={1}
-                  title="Upload Your Lead List"
-                  description="Drop your CSV file to get started. We'll analyze the data quality automatically."
-                />
-                <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => !csvUploaded && fileInputRef.current?.click()}
-                  className={cn(
-                    "relative border-2 border-dashed rounded-lg p-8 md:p-12 text-center transition-all cursor-pointer min-h-[200px] flex flex-col items-center justify-center",
-                    isDragging
-                      ? "border-primary bg-primary/5"
-                      : csvUploaded
-                        ? "border-primary/40 bg-primary/5 cursor-default"
-                        : "border-border hover:border-muted-foreground/50 hover:bg-muted/30"
-                  )}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv"
-                    className="hidden"
-                    onChange={handleCSVUpload}
-                  />
-                  {csvUploaded ? (
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-                        <CheckCircle2 className="w-6 h-6 text-primary" />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-foreground">leads_q1_2026.csv</p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          File uploaded successfully
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="w-14 h-14 rounded-xl bg-muted flex items-center justify-center">
-                        <Upload className="w-7 h-7 text-muted-foreground" />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-foreground">
-                          Drop your CSV here, or click to browse
-                        </p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          Supports .csv files up to 10MB
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-2"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCSVUpload();
-                        }}
-                      >
-                        Use sample data
-                      </Button>
-                    </div>
-                  )}
-                </div>
+function ScoreBadge({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const cls = pct >= 90 ? "bg-emerald-100 text-emerald-700"
+    : pct >= 75 ? "bg-blue-100 text-blue-700"
+    : pct >= 50 ? "bg-amber-100 text-amber-700"
+    : "bg-red-100 text-red-700";
+  return (
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${cls}`}>
+      {pct}/100
+    </span>
+  );
+}
 
-                {csvStats && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6"
-                  >
-                    <StatCard label="Total Rows" value={csvStats.total.toString()} />
-                    <StatCard
-                      label="With Website"
-                      value={`${csvStats.withWebsitePercent}%`}
-                      accent="primary"
-                    />
-                    <StatCard
-                      label="Missing Data"
-                      value={`${csvStats.missingDataPercent}%`}
-                      accent={csvStats.missingDataPercent > 30 ? "destructive" : "muted"}
-                    />
-                  </motion.div>
-                )}
+// ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-                {csvStats && csvStats.missingDataPercent > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex items-start gap-3 mt-4 p-4 rounded-lg bg-amber-500/5 border border-amber-500/20"
-                  >
-                    <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-foreground">
-                        Rows without a website will produce lower quality outputs
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        We recommend enriching missing websites before running the pipeline.
-                      </p>
-                    </div>
-                  </motion.div>
-                )}
-              </StepContainer>
-            )}
+type Step = "upload" | "configure" | "run" | "results";
 
-            {currentStep === "context" && (
-              <StepContainer key="context">
-                <StepHeader
-                  number={2}
-                  title="Context Engine"
-                  description="We automatically extract real company context from each website to avoid generic outputs."
-                  badge="Recommended"
-                />
-                <div className="flex flex-col gap-6">
-                  <div className="flex items-center justify-between p-5 rounded-lg border border-border bg-card">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <Database className="w-5 h-5 text-primary" />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-foreground">Enable Context Engine</p>
-                        <p className="text-sm text-muted-foreground">
-                          Extract real signals from each lead's website
-                        </p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={contextEngineOn}
-                      onCheckedChange={setContextEngineOn}
-                      className="min-w-[44px]"
-                    />
-                  </div>
+export function PipelineBuilderPage() {
+  const { session } = useDesignContext();
 
-                  {/* Offer Extractor Component */}
-                  {csvUploaded && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="p-4 rounded-lg border border-primary/20 bg-primary/5"
-                    >
-                      <OfferExtractorComponent
-                        onOffersExtracted={handleOffersExtracted}
-                        onExportRequested={handleExportOffers}
-                        mode="inline"
-                        minConfidence={0.3}
-                      />
-                    </motion.div>
-                  )}
+  // ── Step ──
+  const [step, setStep] = useState<Step>("upload");
 
-                  <AnimatePresence mode="wait">
-                    {contextEngineOn ? (
-                      <motion.div
-                        key="on"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        className="flex flex-col gap-3"
-                      >
-                        {[
-                          { label: "Website scraping per row", desc: "Extracts key messaging, products, and positioning from each site" },
-                          { label: "ICP extraction", desc: "Identifies ideal customer profile signals from company data" },
-                          { label: "Pain signal detection", desc: "Discovers potential pain points and buying triggers" },
-                        ].map((item) => (
-                          <div
-                            key={item.label}
-                            className="flex items-start gap-3 p-4 rounded-lg border border-border bg-card"
-                          >
-                            <CheckCircle2 className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                            <div>
-                              <p className="font-medium text-sm text-foreground">{item.label}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">{item.desc}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </motion.div>
-                    ) : (
-                      <motion.div
-                        key="off"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        className="flex items-start gap-3 p-4 rounded-lg bg-amber-500/5 border border-amber-500/20"
-                      >
-                        <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-sm font-medium text-foreground">
-                            Outputs may sound generic
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Without the context engine, prompts will rely solely on CSV data (name, company, title) without real company intelligence.
-                          </p>
-                        </div>
-                      </motion.div>
+  // ── CSV ──
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [csvData, setCsvData] = useState<CSVRow[]>([]);
+  const [csvFileName, setCsvFileName] = useState<string>("");
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Column mapping ──
+  const [mapping, setMapping] = useState<ColumnMapping>({
+    name: "", company: "", website: "", email: "",
+    role: "", industry: "", pain_point: "", custom_context: "",
+  });
+
+  // ── Config ──
+  const [useCase, setUseCase] = useState("cold email");
+  const [outcome, setOutcome] = useState("get a reply");
+  const [yourOffer, setYourOffer] = useState("");
+  const [senderWebsite, setSenderWebsite] = useState("");
+  const [selectedAngle, setSelectedAngle] = useState<number>(0);
+  const [signal, setSignal] = useState<SignalType>("Quality");
+  const [isScraping, setIsScraping] = useState(false);
+  const [senderCtx, setSenderCtx] = useState<string>("");
+  const [rowLimit, setRowLimit] = useState<number>(50);
+
+  // ── Run state ──
+  const [rows, setRows] = useState<PipelineRow[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const pauseRef = useRef(false);
+  const abortRef = useRef(false);
+
+  // ── Results UI ──
+  const [selectedRow, setSelectedRow] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"table" | "detail">("table");
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  // ─── CSV PARSING ─────────────────────────────────────────────────────────────
+
+  const parseCSV = useCallback((text: string) => {
+    const lines = text.split("\n").filter(l => l.trim());
+    if (lines.length < 2) {
+      toast.error("CSV must have a header row + at least one data row");
+      return;
+    }
+
+    const parseRow = (line: string): string[] => {
+      const result: string[] = [];
+      let current = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+          else inQuotes = !inQuotes;
+        } else if (ch === ',' && !inQuotes) {
+          result.push(current.trim()); current = "";
+        } else {
+          current += ch;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const headers = parseRow(lines[0]);
+    const dataRows: CSVRow[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const vals = parseRow(lines[i]);
+      const row: CSVRow = {};
+      headers.forEach((h, idx) => { row[h] = vals[idx] ?? ""; });
+      if (Object.values(row).some(v => v.trim())) dataRows.push(row);
+    }
+
+    setCsvHeaders(headers);
+    setCsvData(dataRows);
+    setMapping(autoDetectColumns(headers));
+    setRowLimit(Math.min(dataRows.length, 200));
+    toast.success(`Loaded ${dataRows.length} rows — ${headers.length} columns`);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith(".csv")) {
+      toast.error("Please drop a .csv file");
+      return;
+    }
+    setCsvFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = ev => parseCSV(ev.target?.result as string);
+    reader.readAsText(file);
+  }, [parseCSV]);
+
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = ev => parseCSV(ev.target?.result as string);
+    reader.readAsText(file);
+  }, [parseCSV]);
+
+  // ─── SENDER SCRAPE ────────────────────────────────────────────────────────────
+
+  const handleScrapeSender = async () => {
+    if (!senderWebsite.trim()) return;
+    setIsScraping(true);
+    try {
+      const res = await scrapeWebsiteContext(senderWebsite);
+      const sc = res.structured;
+      const parts = [sc.what_they_do, sc.who_they_serve, sc.how_they_make_money, sc.evidence]
+        .filter(v => v && v !== "unknown");
+      setSenderCtx(parts.join(" | ").slice(0, 400));
+      toast.success("Sender context extracted");
+    } catch {
+      toast.error("Could not scrape sender website");
+    } finally {
+      setIsScraping(false);
+    }
+  };
+
+  // ─── PIPELINE ─────────────────────────────────────────────────────────────────
+
+  const activeRows = useMemo(() => csvData.slice(0, rowLimit), [csvData, rowLimit]);
+
+  const startPipeline = async () => {
+    if (!session) { toast.error("Sign in to run the pipeline"); return; }
+    if (!activeRows.length) { toast.error("No rows to process"); return; }
+    if (!useCase.trim()) { toast.error("Enter a use case"); return; }
+
+    const initialRows: PipelineRow[] = activeRows.map((row, i) => ({
+      index: i, original: row, prompt: "", output: "", outputScore: 0, status: "pending",
+    }));
+    setRows(initialRows);
+    setIsRunning(true);
+    setIsPaused(false);
+    pauseRef.current = false;
+    abortRef.current = false;
+    setStep("run");
+
+    const tmpl = VARIANT_TEMPLATES[selectedAngle];
+    const variantType = (VARIANT_TYPE_MAP?.[tmpl.approach] ?? tmpl.approach) as AngleType;
+    const CONCURRENCY = 3;
+
+    const processRow = async (idx: number, row: CSVRow) => {
+      // Wait while paused
+      while (pauseRef.current && !abortRef.current) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (abortRef.current) return;
+
+      setRows(prev => prev.map(r => r.index === idx ? { ...r, status: "running" } : r));
+
+      try {
+        const rowContext = buildRowContext(row, mapping);
+        const contextParts = [rowContext, senderCtx, yourOffer].filter(Boolean).join("\n");
+        const rowRole = (mapping.role && row[mapping.role]) || "VP";
+        const rowIndustry = (mapping.industry && row[mapping.industry]) || "B2B";
+        const rowCompany = (mapping.company && row[mapping.company]) || "";
+        const rowName = (mapping.name && row[mapping.name]) || "";
+
+        // Build StructuredContext from CSV row for proper personalization scoring
+        const rowStructuredCtx = rowToStructuredContext(row, mapping, senderCtx, yourOffer);
+
+        const prompt = generateCOSTARPrompt({
+          useCase: `${useCase}${rowCompany ? ` to ${rowCompany}` : ""}${rowName ? ` (${rowName})` : ""}`,
+          outcome,
+          role: rowRole,
+          industry: rowIndustry,
+          signal,
+          structuredContext: rowStructuredCtx,
+          variant: variantType,
+        });
+
+        const { output } = await callLLM(prompt, session.access_token);
+        // Score output client-side using full StructuredContext for accurate personalization
+        const score = scoreOutput(output || prompt, rowStructuredCtx).total / 100;
+
+        setRows(prev => prev.map(r =>
+          r.index === idx ? { ...r, prompt, output, outputScore: score, status: "done" } : r
+        ));
+      } catch (err) {
+        const error = err instanceof Error ? err.message : "Unknown error";
+        setRows(prev => prev.map(r => r.index === idx ? { ...r, status: "error", error } : r));
+      }
+    };
+
+    // Concurrency-limited execution
+    for (let i = 0; i < activeRows.length; i += CONCURRENCY) {
+      if (abortRef.current) break;
+      const batch = activeRows.slice(i, i + CONCURRENCY).map((row, j) => processRow(i + j, row));
+      await Promise.all(batch);
+    }
+
+    setIsRunning(false);
+    if (!abortRef.current) {
+      setStep("results");
+      toast.success("Pipeline complete");
+    }
+  };
+
+  const togglePause = () => {
+    pauseRef.current = !pauseRef.current;
+    setIsPaused(pauseRef.current);
+  };
+
+  const stopPipeline = () => {
+    abortRef.current = true;
+    pauseRef.current = false;
+    setIsRunning(false);
+    setStep("results");
+  };
+
+  // ─── EXPORT ───────────────────────────────────────────────────────────────────
+
+  const exportCSV = useCallback(() => {
+    const done = rows.filter(r => r.status === "done");
+    if (!done.length) { toast.error("No completed rows to export"); return; }
+    const allKeys = Object.keys(done[0].original);
+    const headers = [...allKeys, "generated_output", "quality_score"];
+    const lines = done.map(r => {
+      const orig = allKeys.map(k => `"${(r.original[k] ?? "").replace(/"/g, '""')}"`);
+      return [...orig, `"${r.output.replace(/"/g, '""')}"`, `"${Math.round(r.outputScore * 100)}"`].join(",");
+    });
+    const blob = new Blob([[headers.join(","), ...lines].join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `pipeline_${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${done.length} rows`);
+  }, [rows]);
+
+  const exportJSON = useCallback(() => {
+    const done = rows.filter(r => r.status === "done");
+    if (!done.length) { toast.error("No completed rows to export"); return; }
+    const data = done.map(r => ({ ...r.original, generated_output: r.output, quality_score: Math.round(r.outputScore * 100) }));
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `pipeline_${Date.now()}.json`; a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${done.length} rows`);
+  }, [rows]);
+
+  const copyOutput = (idx: number) => {
+    const r = rows.find(r => r.index === idx);
+    if (!r?.output) return;
+    navigator.clipboard.writeText(r.output);
+    setCopiedIdx(idx);
+    setTimeout(() => setCopiedIdx(null), 2000);
+  };
+
+  // ─── DERIVED ──────────────────────────────────────────────────────────────────
+
+  const doneCount = rows.filter(r => r.status === "done").length;
+  const errorCount = rows.filter(r => r.status === "error").length;
+  const pendingCount = rows.filter(r => r.status === "pending").length;
+  const avgScore = doneCount > 0
+    ? Math.round(rows.filter(r => r.status === "done").reduce((s, r) => s + (r.outputScore ?? 0), 0) / doneCount * 100)
+    : 0;
+
+  const STEPS: { id: Step; label: string }[] = [
+    { id: "upload", label: "1. Upload" },
+    { id: "configure", label: "2. Configure" },
+    { id: "run", label: "3. Generate" },
+    { id: "results", label: "4. Results" },
+  ];
+  const stepOrder: Step[] = ["upload", "configure", "run", "results"];
+
+  // ─── RENDER ───────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="min-h-screen bg-background">
+
+      {/* Top bar */}
+      <div className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-sm">
+        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+              <Zap className="w-4 h-4 text-primary-foreground" />
+            </div>
+            <div>
+              <h1 className="text-sm font-bold text-foreground leading-none">Pipeline Builder</h1>
+              <p className="text-[10px] text-muted-foreground">CSV → Context → Prompt → Real LLM Output</p>
+            </div>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-1">
+            {STEPS.map((s, i) => {
+              const idx = stepOrder.indexOf(s.id);
+              const cur = stepOrder.indexOf(step);
+              const isDone = idx < cur;
+              const isCur = idx === cur;
+              return (
+                <React.Fragment key={s.id}>
+                  <button
+                    onClick={() => { if (isDone || isCur) setStep(s.id); }}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all",
+                      isCur ? "bg-primary text-primary-foreground" :
+                      isDone ? "text-foreground hover:bg-muted cursor-pointer" :
+                      "text-muted-foreground cursor-default"
                     )}
-                  </AnimatePresence>
-                </div>
-              </StepContainer>
-            )}
-
-            {currentStep === "business" && (
-              <StepContainer key="business">
-                <StepHeader
-                  number={3}
-                  title="Your Business Context"
-                  description="Tell us about your company so we can tailor every output to your positioning."
-                />
-                <div className="flex flex-col gap-6">
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="biz-website" className="text-sm font-medium">
-                      Your website
-                    </Label>
-                    <div className="relative">
-                      <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="biz-website"
-                        placeholder="https://yourcompany.com"
-                        value={businessWebsite}
-                        onChange={(e) => setBusinessWebsite(e.target.value)}
-                        className="pl-10 h-12 text-base"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      We'll auto-fill your ICP summary, offer, and CTA from your site.
-                    </p>
-                  </div>
-
-                  {businessWebsite && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="p-4 rounded-lg border border-primary/20 bg-primary/5"
-                    >
-                      <div className="flex items-center gap-2 mb-3">
-                        <Sparkles className="w-4 h-4 text-primary" />
-                        <span className="text-xs font-semibold text-primary uppercase tracking-wider">
-                          Auto-detected
-                        </span>
-                      </div>
-                      <p className="text-sm text-foreground leading-relaxed">
-                        B2B SaaS helping sales teams personalize outbound at scale using AI-powered context extraction and multi-step prompt workflows.
-                      </p>
-                    </motion.div>
+                  >
+                    {isDone && <CheckCircle2 className="w-3 h-3" />}
+                    {s.label}
+                  </button>
+                  {i < STEPS.length - 1 && (
+                    <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
                   )}
+                </React.Fragment>
+              );
+            })}
+          </div>
 
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="biz-offer" className="text-sm font-medium">
-                      Your offer
-                    </Label>
-                    <Textarea
-                      id="biz-offer"
-                      placeholder="What do you sell? What's the core value proposition?"
-                      value={businessOffer}
-                      onChange={(e) => setBusinessOffer(e.target.value)}
-                      className="min-h-[100px] text-base"
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="biz-tone" className="text-sm font-medium">
-                      Tone
-                    </Label>
-                    <div className="flex flex-wrap gap-2">
-                      {["Professional", "Casual", "Authoritative", "Friendly", "Direct"].map(
-                        (tone) => (
-                          <button
-                            key={tone}
-                            onClick={() => setBusinessTone(tone)}
-                            className={cn(
-                              "px-4 py-2 rounded-md text-sm font-medium border transition-all min-h-[44px]",
-                              businessTone === tone
-                                ? "bg-primary text-primary-foreground border-primary"
-                                : "bg-card text-muted-foreground border-border hover:border-muted-foreground/50"
-                            )}
-                          >
-                            {tone}
-                          </button>
-                        )
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </StepContainer>
+          <div className="flex items-center gap-2">
+            {rows.length > 0 && (
+              <>
+                <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportCSV}>
+                  <FileText className="w-3 h-3" /> CSV
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={exportJSON}>
+                  <FileJson className="w-3 h-3" /> JSON
+                </Button>
+              </>
             )}
+            {!session && (
+              <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-500/30">
+                <AlertTriangle className="w-3 h-3" /> Sign in to generate
+              </Badge>
+            )}
+          </div>
+        </div>
+      </div>
 
-            {currentStep === "mapping" && (
-              <StepContainer key="mapping">
-                <StepHeader
-                  number={4}
-                  title="Field Mapping"
-                  description="We auto-detected your CSV columns. Review and adjust the mapping below."
-                />
-                <div className="flex flex-col gap-4">
-                  <div className="rounded-lg border border-border overflow-hidden">
-                    <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-4 p-3 bg-muted/50 text-xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
-                      <span>CSV Column</span>
-                      <span />
-                      <span>Mapped To</span>
-                      <span>Confidence</span>
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <AnimatePresence mode="wait">
+
+          {/* ─── STEP 1: UPLOAD ──────────────────────────────────────────────── */}
+          {step === "upload" && (
+            <motion.div key="upload" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+              className="max-w-3xl mx-auto space-y-6"
+            >
+              <div className="text-center space-y-2">
+                <h2 className="text-2xl font-bold">Upload your lead list</h2>
+                <p className="text-muted-foreground text-sm">CSV with columns like name, company, website, email, role, industry</p>
+              </div>
+
+              {/* Drop zone */}
+              <div
+                onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={cn(
+                  "relative border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all",
+                  isDragging ? "border-primary bg-primary/5 scale-[1.01]" :
+                  csvData.length > 0 ? "border-emerald-500/50 bg-emerald-500/5" :
+                  "border-border hover:border-primary/40 hover:bg-muted/30"
+                )}
+              >
+                <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileInput} />
+                {csvData.length > 0 ? (
+                  <div className="space-y-2">
+                    <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto" />
+                    <p className="font-bold text-foreground text-lg">{csvFileName}</p>
+                    <p className="text-sm text-emerald-600 font-medium">{csvData.length} rows · {csvHeaders.length} columns</p>
+                    <p className="text-xs text-muted-foreground">Click to replace</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Upload className="w-10 h-10 text-muted-foreground mx-auto" />
+                    <div>
+                      <p className="font-semibold text-foreground">Drop CSV here or click to browse</p>
+                      <p className="text-sm text-muted-foreground mt-1">Any column names — we auto-detect them</p>
                     </div>
-                    {AUTO_FIELD_MAPPINGS.map((mapping) => (
-                      <div
-                        key={mapping.csvField}
-                        className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-4 p-3 border-b border-border last:border-0"
-                      >
-                        <span className="text-sm font-mono text-foreground">
-                          {mapping.csvField}
-                        </span>
-                        <ArrowRight className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-sm font-medium text-foreground">
-                          {mapping.mappedTo}
-                        </span>
-                        <Badge
-                          variant={mapping.confidence >= 95 ? "default" : "secondary"}
-                          className={cn(
-                            "text-xs",
-                            mapping.confidence >= 95 && "bg-primary/10 text-primary border-primary/20"
-                          )}
+                  </div>
+                )}
+              </div>
+
+              {/* Column mapping */}
+              {csvHeaders.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Settings2 className="w-4 h-4 text-muted-foreground" />
+                    <h3 className="text-sm font-bold">Column Mapping</h3>
+                    <span className="text-[10px] text-muted-foreground">Auto-detected — adjust if needed</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {(Object.keys(mapping) as (keyof ColumnMapping)[]).map(key => (
+                      <div key={key} className="space-y-1">
+                        <Label className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                          {key.replace(/_/g, " ")}
+                        </Label>
+                        <Select
+                          value={mapping[key] || "__none__"}
+                          onValueChange={v => setMapping(m => ({ ...m, [key]: v === "__none__" ? "" : v }))}
                         >
-                          {mapping.confidence}%
-                        </Badge>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="— skip —" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">— skip —</SelectItem>
+                            {csvHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
                       </div>
                     ))}
                   </div>
 
-                  <Button variant="outline" size="sm" className="self-start gap-2 min-h-[44px]">
-                    <Settings2 className="w-4 h-4" />
-                    Save Mapping Template
+                  {/* Preview table */}
+                  <div className="overflow-x-auto rounded-lg border border-border">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/30">
+                          {csvHeaders.map(h => (
+                            <th key={h} className="px-3 py-2 text-left font-semibold text-muted-foreground whitespace-nowrap">
+                              {h}
+                              {Object.values(mapping).includes(h) && (
+                                <span className="ml-1 text-[9px] text-primary bg-primary/10 px-1 py-0.5 rounded">mapped</span>
+                              )}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {csvData.slice(0, 3).map((row, i) => (
+                          <tr key={i} className="border-b border-border/50">
+                            {csvHeaders.map(h => (
+                              <td key={h} className="px-3 py-2 text-foreground/80 truncate max-w-[150px]">
+                                {row[h] || <span className="text-muted-foreground/40">—</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {csvData.length > 3 && (
+                      <p className="text-[10px] text-muted-foreground text-center py-2">…and {csvData.length - 3} more rows</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end">
+                <Button size="lg" className="gap-2 font-bold" disabled={csvData.length === 0} onClick={() => setStep("configure")}>
+                  Configure Pipeline <ArrowRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* ─── STEP 2: CONFIGURE ───────────────────────────────────────────── */}
+          {step === "configure" && (
+            <motion.div key="configure" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+              className="grid grid-cols-1 lg:grid-cols-3 gap-6"
+            >
+              {/* Left: angle + settings */}
+              <div className="lg:col-span-2 space-y-5">
+
+                <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-bold flex items-center gap-2"><Target className="w-4 h-4 text-primary" /> Campaign Settings</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Use Case *</Label>
+                      <Input placeholder="e.g. cold email, LinkedIn DM" value={useCase} onChange={e => setUseCase(e.target.value)} className="h-9" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Goal</Label>
+                      <Input placeholder="e.g. get a reply, book a call" value={outcome} onChange={e => setOutcome(e.target.value)} className="h-9" />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Your Offer (optional)</Label>
+                    <Textarea
+                      placeholder="What you're selling — 1-2 sentences. Injected into every prompt."
+                      value={yourOffer}
+                      onChange={e => setYourOffer(e.target.value)}
+                      className="min-h-[80px] text-sm resize-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-bold flex items-center gap-2"><Sparkles className="w-4 h-4 text-primary" /> Strategic Angle</h3>
+                  <p className="text-xs text-muted-foreground">Controls the psychological framing of every generated email.</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {VARIANT_TEMPLATES.map((tmpl, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setSelectedAngle(idx)}
+                        className={cn(
+                          "relative p-3 rounded-lg border text-left transition-all",
+                          selectedAngle === idx
+                            ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                            : "border-border hover:border-primary/40 hover:bg-muted/30"
+                        )}
+                      >
+                        <p className="text-xs font-bold text-foreground leading-tight">{tmpl.approach}</p>
+                        <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">{tmpl.desc}</p>
+                        {selectedAngle === idx && (
+                          <CheckCircle2 className="absolute top-2 right-2 w-3 h-3 text-primary" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+                  <h3 className="text-sm font-bold flex items-center gap-2"><BarChart3 className="w-4 h-4 text-primary" /> Signal Priority</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {(["Quality", "Conversion", "Creative", "Speed", "Accuracy"] as SignalType[]).map(s => (
+                      <button
+                        key={s}
+                        onClick={() => setSignal(s)}
+                        className={cn(
+                          "px-3 py-1.5 rounded-md border text-xs font-semibold transition-all",
+                          signal === s
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "border-border text-muted-foreground hover:border-primary/40"
+                        )}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right: sender context + run */}
+              <div className="space-y-4">
+                <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-bold flex items-center gap-2"><Globe className="w-4 h-4 text-muted-foreground" /> Sender Context</h3>
+                  <p className="text-xs text-muted-foreground">Your company info — makes emails feel like they come from a real person.</p>
+                  <div className="space-y-2">
+                    <Label className="text-xs font-bold text-muted-foreground">Your website (optional)</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="yourcompany.com"
+                        value={senderWebsite}
+                        onChange={e => setSenderWebsite(e.target.value)}
+                        className="h-8 text-xs flex-1"
+                      />
+                      <Button
+                        variant="outline" size="sm" className="h-8 text-xs shrink-0"
+                        disabled={!senderWebsite.trim() || isScraping}
+                        onClick={handleScrapeSender}
+                      >
+                        {isScraping ? <RefreshCw className="w-3 h-3 animate-spin" /> : "Scrape"}
+                      </Button>
+                    </div>
+                    <Textarea
+                      placeholder="Or paste your company description here…"
+                      className="min-h-[80px] text-xs resize-none"
+                      value={senderCtx}
+                      onChange={e => setSenderCtx(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+                  <h3 className="text-sm font-bold">Row Limit</h3>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range" min={1} max={csvData.length} value={rowLimit}
+                      onChange={e => setRowLimit(Number(e.target.value))}
+                      className="flex-1"
+                    />
+                    <span className="text-sm font-bold w-14 text-right">{rowLimit} rows</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{rowLimit} LLM calls · concurrency 3</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Button
+                    size="lg"
+                    className="w-full font-bold h-12 gap-2 shadow-lg shadow-primary/20"
+                    onClick={startPipeline}
+                    disabled={!useCase.trim() || !session}
+                  >
+                    <Play className="w-4 h-4" /> Run Pipeline ({rowLimit} rows)
+                  </Button>
+                  {!session && (
+                    <p className="text-[11px] text-center text-amber-600">⚠️ Sign in required</p>
+                  )}
+                  <Button variant="ghost" size="sm" className="w-full text-xs" onClick={() => setStep("upload")}>
+                    ← Back to upload
                   </Button>
                 </div>
-              </StepContainer>
-            )}
+              </div>
+            </motion.div>
+          )}
 
-            {currentStep === "workflow" && (
-              <StepContainer key="workflow">
-                <StepHeader
-                  number={5}
-                  title="Select Your Pipeline"
-                  description="Choose a workflow template that matches your outbound strategy."
-                />
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {WORKFLOW_TEMPLATES.map((wf) => {
-                    const Icon = wf.icon;
-                    const isSelected = selectedWorkflow === wf.id;
-                    return (
-                      <button
-                        key={wf.id}
-                        onClick={() => setSelectedWorkflow(wf.id)}
-                        className={cn(
-                          "flex flex-col p-5 rounded-lg border text-left transition-all min-h-[200px]",
-                          isSelected
-                            ? "border-primary bg-primary/5 ring-1 ring-primary"
-                            : "border-border bg-card hover:border-muted-foreground/50"
-                        )}
-                      >
-                        <div className="flex items-center gap-3 mb-3">
-                          <div
-                            className={cn(
-                              "w-10 h-10 rounded-lg flex items-center justify-center",
-                              isSelected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                            )}
-                          >
-                            <Icon className="w-5 h-5" />
-                          </div>
-                          <h3 className="font-semibold text-foreground text-base">{wf.name}</h3>
-                        </div>
-                        <p className="text-sm text-muted-foreground leading-relaxed mb-4 flex-1">
-                          {wf.description}
-                        </p>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {wf.steps.map((step, i) => (
-                            <span key={step} className="flex items-center gap-1">
-                              <span
-                                className={cn(
-                                  "text-xs font-medium px-2 py-1 rounded",
-                                  isSelected
-                                    ? "bg-primary/10 text-primary"
-                                    : "bg-muted text-muted-foreground"
-                                )}
-                              >
-                                {step}
-                              </span>
-                              {i < wf.steps.length - 1 && (
-                                <ChevronRight className="w-3 h-3 text-muted-foreground/50" />
-                              )}
-                            </span>
-                          ))}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </StepContainer>
-            )}
-
-            {currentStep === "preview" && (
-              <StepContainer key="preview">
-                <StepHeader
-                  number={6}
-                  title="Preview Your Pipeline"
-                  description="This entire system is generated from one row."
-                />
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* LEFT: Input Row */}
-                  <div className="flex flex-col gap-4">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                      Input Row
-                    </h3>
-                    <div className="rounded-lg border border-border bg-card p-5 flex flex-col gap-3">
-                      {[
-                        { label: "Name", value: "Sarah Chen" },
-                        { label: "Company", value: "Acme Corp" },
-                        { label: "Title", value: "VP of Sales" },
-                        { label: "Website", value: "https://acme.com" },
-                      ].map((item) => (
-                        <div key={item.label} className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground uppercase tracking-wider">
-                            {item.label}
-                          </span>
-                          <span className="text-sm font-medium text-foreground">{item.value}</span>
-                        </div>
-                      ))}
-                    </div>
+          {/* ─── STEP 3: RUN ─────────────────────────────────────────────────── */}
+          {step === "run" && (
+            <motion.div key="run" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+              className="max-w-3xl mx-auto space-y-5"
+            >
+              <div className="bg-card border border-border rounded-xl p-6 space-y-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold">Generating</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Angle: <span className="font-semibold text-foreground">{VARIANT_TEMPLATES[selectedAngle].approach}</span>
+                      {" · "}{rows.length} rows
+                    </p>
                   </div>
-
-                  {/* RIGHT: Output Chain */}
-                  <div className="flex flex-col gap-4">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                      Output Chain
-                    </h3>
-                    <div className="flex flex-col gap-3 relative">
-                      <div className="absolute left-5 top-6 bottom-6 w-px bg-border" />
-                      {[
-                        { step: 1, label: "ICP Analysis", icon: Search, content: SAMPLE_OUTPUTS.icp, key: "icp" },
-                        { step: 2, label: "Pain Detection", icon: Target, content: SAMPLE_OUTPUTS.pain, key: "pain" },
-                        { step: 3, label: "Cold Email", icon: Mail, content: SAMPLE_OUTPUTS.email, key: "email" },
-                        { step: 4, label: "Follow-up", icon: MessageSquare, content: SAMPLE_OUTPUTS.followup, key: "followup" },
-                        { step: 5, label: "Breakup", icon: FileText, content: SAMPLE_OUTPUTS.breakup, key: "breakup" },
-                      ].map((item) => {
-                        const StepIcon = item.icon;
-                        return (
-                          <div key={item.key} className="flex gap-3 relative">
-                            <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0 z-10">
-                              <StepIcon className="w-4 h-4" />
-                            </div>
-                            <div className="flex-1 rounded-lg border border-border bg-card p-4 group">
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-                                    Step {item.step}
-                                  </span>
-                                  <span className="text-sm font-semibold text-foreground">
-                                    {item.label}
-                                  </span>
-                                </div>
-                                <button
-                                  onClick={() => handleCopyOutput(item.key, item.content)}
-                                  className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded hover:bg-muted min-w-[44px] min-h-[44px] flex items-center justify-center"
-                                  aria-label={`Copy ${item.label}`}
-                                >
-                                  {copiedStep === item.key ? (
-                                    <Check className="w-4 h-4 text-primary" />
-                                  ) : (
-                                    <Copy className="w-4 h-4 text-muted-foreground" />
-                                  )}
-                                </button>
-                              </div>
-                              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line line-clamp-3">
-                                {item.content}
-                              </p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" className="h-8 gap-1" onClick={togglePause} disabled={!isRunning}>
+                      {isPaused ? <><Play className="w-3 h-3" /> Resume</> : <><Pause className="w-3 h-3" /> Pause</>}
+                    </Button>
+                    <Button variant="outline" size="sm" className="h-8 gap-1 text-red-600 border-red-500/30" onClick={stopPipeline} disabled={!isRunning}>
+                      <X className="w-3 h-3" /> Stop
+                    </Button>
                   </div>
                 </div>
-              </StepContainer>
-            )}
 
-            {currentStep === "variations" && (
-              <StepContainer key="variations">
-                <StepHeader
-                  number={7}
-                  title="Variation Mode"
-                  description="Control how the system generates variations across your pipeline."
-                />
-                <div className="flex flex-col gap-4">
+                <ProgressBar value={doneCount + errorCount} max={rows.length} label="Progress" />
+
+                <div className="grid grid-cols-3 gap-3">
                   {[
-                    {
-                      id: "consistent" as const,
-                      label: "Consistent Tone",
-                      description: "Every step uses the same voice and approach. Best for established brands with strict guidelines.",
-                    },
-                    {
-                      id: "mixed" as const,
-                      label: "Mixed Variations",
-                      description: "Each step explores different angles and tonalities. Best for testing what resonates.",
-                      badge: "Recommended",
-                    },
-                  ].map((mode) => (
-                    <button
-                      key={mode.id}
-                      onClick={() => setVariationMode(mode.id)}
-                      className={cn(
-                        "flex items-start gap-4 p-5 rounded-lg border text-left transition-all min-h-[80px]",
-                        variationMode === mode.id
-                          ? "border-primary bg-primary/5 ring-1 ring-primary"
-                          : "border-border bg-card hover:border-muted-foreground/50"
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5",
-                          variationMode === mode.id ? "border-primary" : "border-muted-foreground/40"
-                        )}
-                      >
-                        {variationMode === mode.id && (
-                          <div className="w-2.5 h-2.5 rounded-full bg-primary" />
-                        )}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-foreground">{mode.label}</span>
-                          {mode.badge && (
-                            <Badge variant="secondary" className="text-[10px] uppercase tracking-wider bg-primary/10 text-primary border-primary/20">
-                              {mode.badge}
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground mt-1">{mode.description}</p>
-                      </div>
-                    </button>
+                    { label: "Done", value: doneCount, cls: "text-emerald-600" },
+                    { label: "Errors", value: errorCount, cls: "text-red-600" },
+                    { label: "Pending", value: pendingCount, cls: "text-muted-foreground" },
+                  ].map(stat => (
+                    <div key={stat.label} className="bg-muted/30 rounded-lg p-3 text-center">
+                      <p className={`text-2xl font-bold ${stat.cls}`}>{stat.value}</p>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{stat.label}</p>
+                    </div>
                   ))}
                 </div>
-              </StepContainer>
-            )}
 
-            {currentStep === "execution" && (
-              <StepContainer key="execution">
-                <StepHeader
-                  number={8}
-                  title="Run Your Pipeline"
-                  description="Review the execution summary and launch your structured outbound system."
-                />
-                <div className="flex flex-col gap-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <StatCard label="Rows" value={csvStats?.total.toString() || "5"} />
-                    <StatCard label="Est. Tokens" value="~12,400" accent="primary" />
-                    <StatCard label="Est. Runtime" value="~45s" accent="muted" />
+                {isPaused && (
+                  <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3">
+                    <Pause className="w-4 h-4 text-amber-600 shrink-0" />
+                    <p className="text-sm text-amber-700 font-medium">Paused — current batch will finish, then stop</p>
                   </div>
+                )}
+              </div>
 
-                  {!isRunning && !isComplete && (
-                    <Button
-                      size="lg"
-                      className="h-14 text-base font-bold shadow-xl shadow-primary/10 self-start gap-2 min-w-[200px]"
-                      onClick={handleRunWorkflow}
-                    >
-                      <Play className="w-5 h-5" />
-                      Run Pipeline
-                    </Button>
-                  )}
+              <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                {rows.map(row => (
+                  <div key={row.index} className={cn(
+                    "flex items-start gap-3 px-4 py-3 rounded-lg border text-sm transition-all",
+                    row.status === "running" ? "border-primary/30 bg-primary/5" :
+                    row.status === "done" ? "border-emerald-500/20 bg-emerald-500/5" :
+                    row.status === "error" ? "border-red-500/20 bg-red-500/5" :
+                    "border-border bg-muted/20"
+                  )}>
+                    <div className="shrink-0 mt-0.5">
+                      {row.status === "done" && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                      {row.status === "running" && <RefreshCw className="w-4 h-4 text-primary animate-spin" />}
+                      {row.status === "error" && <AlertTriangle className="w-4 h-4 text-red-500" />}
+                      {row.status === "pending" && <div className="w-4 h-4 rounded-full border-2 border-border" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground truncate">
+                        {(mapping.company && row.original[mapping.company]) || `Row ${row.index + 1}`}
+                        {mapping.name && row.original[mapping.name] && (
+                          <span className="text-muted-foreground font-normal"> — {row.original[mapping.name]}</span>
+                        )}
+                      </p>
+                      {row.status === "done" && row.output && (
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">{row.output.slice(0, 100)}…</p>
+                      )}
+                      {row.status === "error" && (
+                        <p className="text-xs text-red-600 mt-0.5">{row.error}</p>
+                      )}
+                    </div>
+                    {row.status === "done" && <ScoreBadge score={row.outputScore} />}
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
 
-                  {isRunning && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="flex flex-col gap-3"
-                    >
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-medium text-foreground flex items-center gap-2">
-                          <RefreshCw className="w-4 h-4 animate-spin text-primary" />
-                          Processing rows...
-                        </span>
-                        <span className="text-muted-foreground">{runProgress}%</span>
-                      </div>
-                      <Progress value={runProgress} className="h-2" />
-                    </motion.div>
-                  )}
+          {/* ─── STEP 4: RESULTS ─────────────────────────────────────────────── */}
+          {step === "results" && (
+            <motion.div key="results" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+              className="space-y-5"
+            >
+              {/* Stats */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { label: "Completed", value: doneCount, sub: `of ${rows.length}`, cls: "text-emerald-600" },
+                  { label: "Errors", value: errorCount, sub: "failed rows", cls: errorCount > 0 ? "text-red-600" : "text-muted-foreground" },
+                  { label: "Avg Score", value: `${avgScore}/100`, sub: "output quality", cls: avgScore >= 70 ? "text-blue-600" : "text-amber-600" },
+                  { label: "Angle", value: VARIANT_TEMPLATES[selectedAngle].approach, sub: "strategic frame", cls: "text-primary" },
+                ].map(stat => (
+                  <div key={stat.label} className="bg-card border border-border rounded-xl p-4">
+                    <p className={`text-xl font-bold truncate ${stat.cls}`}>{stat.value}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{stat.label}</p>
+                    <p className="text-[10px] text-muted-foreground">{stat.sub}</p>
+                  </div>
+                ))}
+              </div>
 
-                  {isComplete && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="flex items-center gap-3 p-4 rounded-lg bg-primary/5 border border-primary/20"
-                    >
-                      <CheckCircle2 className="w-5 h-5 text-primary shrink-0" />
-                      <div>
-                        <p className="font-semibold text-foreground text-sm">
-                          Pipeline complete
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          All {csvStats?.total || 5} rows processed. Head to the Output step to download your results.
-                        </p>
-                      </div>
-                    </motion.div>
-                  )}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-1">
+                  <button
+                    onClick={() => setViewMode("table")}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                      viewMode === "table" ? "bg-card shadow text-foreground" : "text-muted-foreground hover:text-foreground")}
+                  >
+                    <Table2 className="w-3 h-3" /> Table
+                  </button>
+                  <button
+                    onClick={() => {
+                      setViewMode("detail");
+                      if (selectedRow === null) setSelectedRow(rows.find(r => r.status === "done")?.index ?? 0);
+                    }}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                      viewMode === "detail" ? "bg-card shadow text-foreground" : "text-muted-foreground hover:text-foreground")}
+                  >
+                    <Eye className="w-3 h-3" /> Detail
+                  </button>
                 </div>
-              </StepContainer>
-            )}
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={exportCSV}>
+                    <Download className="w-3 h-3" /> CSV
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={exportJSON}>
+                    <FileJson className="w-3 h-3" /> JSON
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={() => setStep("configure")}>
+                    <RefreshCw className="w-3 h-3" /> Re-run
+                  </Button>
+                </div>
+              </div>
 
-            {currentStep === "output" && (
-              <StepContainer key="output">
-                <StepHeader
-                  number={9}
-                  title="Export Your Results"
-                  description="Download your structured outbound system or send it directly to your stack."
-                />
-                <div className="flex flex-col gap-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <button className="flex flex-col items-center gap-3 p-6 rounded-lg border border-border bg-card hover:border-primary/50 hover:bg-primary/5 transition-all text-center min-h-[120px]">
-                      <Download className="w-6 h-6 text-foreground" />
-                      <div>
-                        <p className="font-semibold text-foreground">Download CSV</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Get your complete pipeline as a structured CSV file
-                        </p>
-                      </div>
-                    </button>
-                    <button className="flex flex-col items-center gap-3 p-6 rounded-lg border border-border bg-card hover:border-primary/50 hover:bg-primary/5 transition-all text-center relative min-h-[120px]">
-                      <Badge className="absolute top-3 right-3 text-[10px] bg-primary/10 text-primary border-primary/20">
-                        Pro+
-                      </Badge>
-                      <Send className="w-6 h-6 text-foreground" />
-                      <div>
-                        <p className="font-semibold text-foreground">Send to Webhook</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Push results directly to your automation stack
-                        </p>
-                      </div>
-                    </button>
+              {/* Table view */}
+              {viewMode === "table" && (
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/30 text-xs">
+                          <th className="px-4 py-3 text-left font-semibold text-muted-foreground w-8">#</th>
+                          {mapping.company && <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Company</th>}
+                          {mapping.name && <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Name</th>}
+                          <th className="px-4 py-3 text-left font-semibold text-muted-foreground">Output preview</th>
+                          <th className="px-4 py-3 text-center font-semibold text-muted-foreground w-20">Score</th>
+                          <th className="px-4 py-3 text-center font-semibold text-muted-foreground w-20">Status</th>
+                          <th className="px-4 py-3 w-10"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(row => (
+                          <tr
+                            key={row.index}
+                            onClick={() => { setSelectedRow(row.index); setViewMode("detail"); }}
+                            className={cn(
+                              "border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer",
+                              selectedRow === row.index && "bg-primary/5"
+                            )}
+                          >
+                            <td className="px-4 py-3 text-muted-foreground text-xs">{row.index + 1}</td>
+                            {mapping.company && <td className="px-4 py-3 font-medium">{row.original[mapping.company] || "—"}</td>}
+                            {mapping.name && <td className="px-4 py-3 text-foreground/80">{row.original[mapping.name] || "—"}</td>}
+                            <td className="px-4 py-3 text-muted-foreground max-w-[400px]">
+                              {row.output
+                                ? <span className="line-clamp-1">{row.output.slice(0, 120)}{row.output.length > 120 ? "…" : ""}</span>
+                                : row.status === "error"
+                                  ? <span className="text-red-500 text-xs">{row.error}</span>
+                                  : <span className="text-muted-foreground/40">{row.status === "running" ? "Generating…" : "Pending"}</span>
+                              }
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {row.status === "done" && <ScoreBadge score={row.outputScore} />}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded",
+                                row.status === "done" ? "bg-emerald-100 text-emerald-700" :
+                                row.status === "error" ? "bg-red-100 text-red-700" :
+                                row.status === "running" ? "bg-blue-100 text-blue-700" :
+                                "bg-muted text-muted-foreground"
+                              )}>
+                                {row.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                              {row.status === "done" && (
+                                <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={() => copyOutput(row.index)}>
+                                  {copiedIdx === row.index ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
+                </div>
+              )}
 
-                  <div className="rounded-lg border border-border bg-card p-5">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-                      Integrations
-                    </p>
-                    <div className="flex flex-wrap gap-3">
-                      {["Clay", "Zapier", "Make", "n8n"].map((integration) => (
-                        <div
-                          key={integration}
-                          className="flex items-center gap-2 px-4 py-2 rounded-md border border-border bg-muted/30 text-sm font-medium text-foreground"
-                        >
-                          <Layers className="w-4 h-4 text-muted-foreground" />
-                          {integration}
+              {/* Detail view */}
+              {viewMode === "detail" && selectedRow !== null && (() => {
+                const row = rows.find(r => r.index === selectedRow);
+                if (!row) return null;
+                return (
+                  <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+                    {/* Sidebar list */}
+                    <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border bg-muted/20">
+                        <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide">All Rows</p>
+                      </div>
+                      <div className="overflow-y-auto max-h-[60vh] divide-y divide-border/50">
+                        {rows.map(r => (
+                          <button
+                            key={r.index}
+                            onClick={() => setSelectedRow(r.index)}
+                            className={cn(
+                              "w-full text-left px-4 py-3 transition-all hover:bg-muted/20",
+                              r.index === selectedRow && "bg-primary/5 border-l-2 border-l-primary"
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-foreground truncate">
+                                  {(mapping.company && r.original[mapping.company]) || `Row ${r.index + 1}`}
+                                </p>
+                                {mapping.name && r.original[mapping.name] && (
+                                  <p className="text-[10px] text-muted-foreground truncate">{r.original[mapping.name]}</p>
+                                )}
+                              </div>
+                              <div className="shrink-0">
+                                {r.status === "done" && <ScoreBadge score={r.outputScore} />}
+                                {r.status === "error" && <span className="text-[10px] text-red-600">error</span>}
+                                {r.status === "running" && <RefreshCw className="w-3 h-3 text-primary animate-spin" />}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Detail panel */}
+                    <div className="lg:col-span-3 space-y-4">
+                      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-foreground truncate">
+                              {(mapping.company && row.original[mapping.company]) || `Row ${row.index + 1}`}
+                              {mapping.name && row.original[mapping.name] && ` — ${row.original[mapping.name]}`}
+                            </h3>
+                            <p className="text-xs text-muted-foreground">
+                              {[mapping.role && row.original[mapping.role], mapping.industry && row.original[mapping.industry]]
+                                .filter(Boolean).join(" · ")}
+                            </p>
+                          </div>
+                          {row.status === "done" && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              <ScoreBadge score={row.outputScore} />
+                              <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => copyOutput(row.index)}>
+                                {copiedIdx === row.index ? <><Check className="w-3 h-3" /> Copied!</> : <><Copy className="w-3 h-3" /> Copy</>}
+                              </Button>
+                            </div>
+                          )}
                         </div>
-                      ))}
+
+                        {row.status === "done" && (
+                          <div className="bg-muted/20 rounded-lg p-4 font-mono text-sm text-foreground leading-relaxed whitespace-pre-wrap border border-border">
+                            {row.output}
+                          </div>
+                        )}
+                        {row.status === "error" && (
+                          <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-4 text-sm text-red-600">{row.error}</div>
+                        )}
+                        {(row.status === "pending" || row.status === "running") && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <RefreshCw className="w-4 h-4 animate-spin text-primary" />
+                            {row.status === "running" ? "Generating…" : "Waiting in queue"}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Input data collapsible */}
+                      <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+                        <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                          <ChevronDown className="w-3 h-3" /> Input Fields
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {csvHeaders.filter(h => row.original[h]).map(h => (
+                            <div key={h}>
+                              <p className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">{h}</p>
+                              <p className="text-xs text-foreground truncate">{row.original[h]}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </StepContainer>
-            )}
-          </AnimatePresence>
+                );
+              })()}
+            </motion.div>
+          )}
 
-          {/* NAVIGATION FOOTER */}
-          <div className="flex items-center justify-between mt-8 pt-6 border-t border-border">
-            <Button
-              variant="outline"
-              onClick={goPrev}
-              disabled={currentStepIndex === 0}
-              className="gap-2 min-h-[44px]"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="hidden sm:inline">Previous</span>
-            </Button>
-
-            <span className="text-xs text-muted-foreground">
-              Step {currentStepIndex + 1} of {STEPS.length}
-            </span>
-
-            <Button
-              onClick={goNext}
-              disabled={currentStepIndex === STEPS.length - 1}
-              className="gap-2 min-h-[44px]"
-            >
-              <span className="hidden sm:inline">Next</span>
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
+        </AnimatePresence>
       </div>
-    </div>
-  );
-}
-
-// ─── SUB-COMPONENTS ──────────────────────────────────────
-
-function StepContainer({ children }: { children: React.ReactNode }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -12 }}
-      transition={{ duration: 0.3 }}
-      className="flex flex-col gap-6"
-    >
-      {children}
-    </motion.div>
-  );
-}
-
-function StepHeader({
-  number,
-  title,
-  description,
-  badge,
-}: {
-  number: number;
-  title: string;
-  description: string;
-  badge?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-2 mb-2">
-      <div className="flex items-center gap-3">
-        <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-          Step {number}
-        </span>
-        {badge && (
-          <Badge variant="secondary" className="text-[10px] uppercase tracking-wider bg-primary/10 text-primary border-primary/20">
-            {badge}
-          </Badge>
-        )}
-      </div>
-      <h2 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">{title}</h2>
-      <p className="text-muted-foreground text-sm md:text-base leading-relaxed max-w-2xl">
-        {description}
-      </p>
-    </div>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: string;
-  accent?: "primary" | "destructive" | "muted";
-}) {
-  return (
-    <div className="flex flex-col gap-1 p-4 rounded-lg border border-border bg-card">
-      <span className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
-        {label}
-      </span>
-      <span
-        className={cn(
-          "text-2xl font-bold",
-          accent === "primary" && "text-primary",
-          accent === "destructive" && "text-destructive",
-          (!accent || accent === "muted") && "text-foreground"
-        )}
-      >
-        {value}
-      </span>
     </div>
   );
 }
