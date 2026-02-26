@@ -37,6 +37,8 @@ import {
   Check,
 } from "lucide-react";
 import { toast } from "sonner";
+import { OfferExtractorComponent, type ExtractedOffer } from "./OfferExtractorComponent";
+import { extractOffersFromCSV, type CSVOfferRow } from "./offer-extractor";
 
 // ─── TYPES ───────────────────────────────────────────────
 type PipelineStep =
@@ -158,6 +160,7 @@ export function PipelineBuilderPage() {
   const [currentStep, setCurrentStep] = useState<PipelineStep>("upload");
   const [csvUploaded, setCsvUploaded] = useState(false);
   const [csvData, setCsvData] = useState<CSVRow[]>([]);
+  const [extractedOffers, setExtractedOffers] = useState<ExtractedOffer[]>([]);
   const [contextEngineOn, setContextEngineOn] = useState(true);
   const [businessWebsite, setBusinessWebsite] = useState("");
   const [businessOffer, setBusinessOffer] = useState("");
@@ -251,6 +254,15 @@ export function PipelineBuilderPage() {
     },
     []
   );
+
+  const handleOffersExtracted = useCallback((offers: ExtractedOffer[]) => {
+    setExtractedOffers(offers);
+    toast.success(`${offers.length} offers detected from your data`);
+  }, []);
+
+  const handleExportOffers = useCallback((offers: ExtractedOffer[], format: 'csv' | 'json') => {
+    toast.success(`Offers exported as ${format.toUpperCase()}`);
+  }, []);
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground font-[var(--font-family-inter)]">
@@ -452,6 +464,22 @@ export function PipelineBuilderPage() {
                       className="min-w-[44px]"
                     />
                   </div>
+
+                  {/* Offer Extractor Component */}
+                  {csvUploaded && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-4 rounded-lg border border-primary/20 bg-primary/5"
+                    >
+                      <OfferExtractorComponent
+                        onOffersExtracted={handleOffersExtracted}
+                        onExportRequested={handleExportOffers}
+                        mode="inline"
+                        minConfidence={0.3}
+                      />
+                    </motion.div>
+                  )}
 
                   <AnimatePresence mode="wait">
                     {contextEngineOn ? (
