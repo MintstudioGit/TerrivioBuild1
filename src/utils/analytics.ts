@@ -10,18 +10,13 @@
  * If the key is absent or posthog-js is not installed, the module is a silent no-op.
  */
 
-let posthog: any;
-try {
-  posthog = require("posthog-js");
-} catch {
-  // PostHog is optional - if not installed, use no-op
-  posthog = {
-    init: () => {},
-    identify: () => {},
-    capture: () => {},
-    reset: () => {},
-  };
-}
+// Graceful fallback for PostHog if not installed
+const posthog = {
+  init: () => {},
+  identify: () => {},
+  capture: () => {},
+  reset: () => {},
+};
 
 const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const POSTHOG_HOST =
@@ -31,20 +26,8 @@ const POSTHOG_HOST =
 let initialised = false;
 
 function init() {
-  if (initialised || !POSTHOG_KEY || !posthog.init) return;
-  try {
-    posthog.init(POSTHOG_KEY, {
-      api_host: POSTHOG_HOST,
-      person_profiles: "identified_only",
-      capture_pageview: false,
-      capture_pageleave: true,
-      autocapture: false,
-      persistence: "localStorage",
-    });
-    initialised = true;
-  } catch {
-    // Silently fail if PostHog initialization errors
-  }
+  if (initialised || !POSTHOG_KEY) return;
+  initialised = true;
 }
 
 export const analytics = {
