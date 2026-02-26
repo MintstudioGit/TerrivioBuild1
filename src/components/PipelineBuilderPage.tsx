@@ -590,9 +590,6 @@ export function PipelineBuilderPage() {
     </div>
   );
 }
-
-      {/* MAIN CONTENT */}
-      <div className="flex-1">
         <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
           <AnimatePresence mode="wait">
             {currentStep === "upload" && (
