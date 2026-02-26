@@ -74,19 +74,16 @@ export function LandingPage() {
                 className="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start"
               >
                 <Button size="lg" className="h-14 px-8 text-[var(--text-base)] font-bold shadow-xl shadow-primary/20 hover:scale-105 transition-transform" asChild>
-                  <Link to="/pipeline">
-                    Upload CSV <ArrowRight className="ml-2 w-4 h-4" />
+                  <Link to="/generator">
+                    Start Generating <ArrowRight className="ml-2 w-4 h-4" />
                   </Link>
                 </Button>
                 <Button size="lg" variant="outline" className="h-14 px-8 text-[var(--text-base)]" asChild>
-                  <Link to="/app">
-                    Open App Hub
+                  <Link to="/prompts">
+                    Browse Library
                   </Link>
                 </Button>
               </motion.div>
-              <div className="text-sm text-muted-foreground">
-                Prefer browsing? <Link to="/prompts" className="text-primary font-medium hover:underline">Explore the Directory</Link>
-              </div>
 
               <div className="flex items-center justify-center lg:justify-start gap-6 text-[var(--text-sm)] text-muted-foreground pt-4">
                 <div className="flex items-center gap-2">

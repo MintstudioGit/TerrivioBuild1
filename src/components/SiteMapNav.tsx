@@ -30,7 +30,6 @@ export function SiteMapNav() {
   const routes = [
     { label: "Main", items: [
       { path: "/", label: "Landing Page", icon: Home },
-      { path: "/app", label: "App Hub", icon: LayoutDashboard },
       { path: "/prompts", label: "Directory", icon: LayoutGrid },
       { path: "/saved", label: "Saved Prompts", icon: BookOpen },
       { path: "/pricing", label: "Pricing", icon: CreditCard },
@@ -38,13 +37,7 @@ export function SiteMapNav() {
     { label: "App", items: [
       { path: "/generator", label: "Generator", icon: Terminal },
       { path: "/packs", label: "Packs", icon: Package },
-      { path: "/marketplace", label: "Marketplace", icon: Package },
-      { path: "/pipeline", label: "Pipeline", icon: LayoutDashboard },
       { path: "/analytics", label: "Analytics", icon: BarChart3 },
-      { path: "/integrations", label: "Integrations", icon: Globe },
-      { path: "/api-keys", label: "API Keys", icon: Shield },
-      { path: "/white-label", label: "White Label", icon: Shield },
-      { path: "/mobile", label: "Mobile App", icon: Globe },
     ]},
     { label: "Auth", items: [
       { path: "/signin", label: "Sign In", icon: LogIn },
